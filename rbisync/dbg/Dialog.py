@@ -21,12 +21,10 @@ import termios
 
 from PyQt4.QtCore import QTime, QStringList, QString, QSettings, QByteArray, Qt, QObject, SIGNAL
 from PyQt4.QtGui import QDialog, QIcon
-from rbisync.rbisync.bisync import Bisync
-
-from rbisync.rbisync.helpers import stringToBytes, bytesToString, History
-
-from rbisync.dbg.ui_Dialog import Ui_Dialog
 from rbisync.rserial.io import IO
+from rbisync.rbisync.bisync import Bisync
+from rbisync.dbg.ui_Dialog import Ui_Dialog
+from rbisync.rbisync.helpers import stringToBytes, bytesToString, History
 
 
 class Dialog(QDialog, Ui_Dialog):
@@ -82,8 +80,6 @@ class Dialog(QDialog, Ui_Dialog):
         self.__bisyncWidgets.append(self.comboBoxDataBits)
         self.__bisyncWidgets.append(self.comboBoxParity)
         self.__bisyncWidgets.append(self.comboBoxStopBits)
-
-        # self.setWindowTitle("Bisync")
         
     def __keyPressed(self, key):
         if key in [Qt.Key_Enter, Qt.Key_Return]:

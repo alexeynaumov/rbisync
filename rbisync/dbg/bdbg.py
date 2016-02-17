@@ -21,8 +21,6 @@ import sys
 import os
 sys.path.append(os.path.abspath("../../"))
 
-print os.getcwd()
-
 from PyQt4.QtGui import QApplication
 from Dialog import Dialog
 
