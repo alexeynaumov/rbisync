@@ -18,15 +18,16 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import sys, os
+sys.path.append(os.path.abspath("../"))
 sys.path.append(os.path.abspath("../../rhelpers/"))
 sys.path.append(os.path.abspath("../../rserial/"))
 
 import termios
 from PyQt4.QtCore import QTime, QStringList, QString, QSettings, QByteArray, Qt, QObject, SIGNAL
 from PyQt4.QtGui import QDialog, QIcon
+from rhelpers.utils import stringToBytes, bytesToString, History
 from rserial.io import IO
 from rbisync.bisync import Bisync
-from rhelpers.utils import stringToBytes, bytesToString, History
 from bdbg.ui_Dialog import Ui_Dialog
 
 
