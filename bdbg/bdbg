@@ -23,7 +23,7 @@ import sys, os
 sys.path.append(os.path.abspath("../"))
 
 from PyQt4.QtGui import QApplication
-from Dialog import Dialog
+from bdbg.Dialog import Dialog
 
 
 def main():

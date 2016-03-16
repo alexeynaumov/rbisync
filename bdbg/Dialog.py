@@ -30,6 +30,8 @@ from rserial.io import IO
 from rbisync.bisync import Bisync
 from bdbg.ui_Dialog import Ui_Dialog
 
+ICON_ROCKET = os.path.dirname(__file__) + "/icons/rocket.svg"
+
 
 class Dialog(QDialog, Ui_Dialog):
     def __init__(self, parent=None):
@@ -46,7 +48,7 @@ class Dialog(QDialog, Ui_Dialog):
                 self.__postText("E[?]: Error closing port.")
 
     def __initialize(self):
-        self.setWindowIcon(QIcon("./icons/rocket.svg"))
+        self.setWindowIcon(QIcon(ICON_ROCKET))
 
         # Find out all supported baud rates
         attrs = dir(termios)
