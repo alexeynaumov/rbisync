@@ -117,7 +117,7 @@ class Dialog(QDialog, Ui_Dialog):
             self.textEditTraffic.append(text)
 
     def __saveSettings(self):
-        settings = QSettings("Rocket Labs", "bdbg.py")
+        settings = QSettings("Rocket Labs", "bdbg")
         settings.setValue("device", self.lineEditDevice.text())
         settings.setValue("baudRate", self.comboBoxBaudRate.currentIndex())
         settings.setValue("dataBits", self.comboBoxDataBits.currentIndex())
@@ -126,10 +126,10 @@ class Dialog(QDialog, Ui_Dialog):
         settings.setValue("format", self.comboBoxFormat.currentIndex())
         settings.setValue("leadingZeroes", self.checkBoxLeadingZeroes.isChecked())
         settings.setValue("timestamp", self.checkBoxTimestamp.isChecked())
-        settings.setValue("rawText", self.checkBoxRawText.isChecked())
+        settings.setValue("rawText", self.checkBoxRawText.checkState())
 
     def __loadSettings(self):
-        settings = QSettings("Rocket Labs", "bdbg.py")
+        settings = QSettings("Rocket Labs", "bdbg")
         self.lineEditDevice.setText(settings.value("device", "/dev/ttyS0").toString())
         self.comboBoxBaudRate.setCurrentIndex(settings.value("baudRate", 0).toInt()[0])
         self.comboBoxDataBits.setCurrentIndex(settings.value("dataBits", 0).toInt()[0])
@@ -138,7 +138,10 @@ class Dialog(QDialog, Ui_Dialog):
         self.comboBoxFormat.setCurrentIndex(settings.value("format", 0).toInt()[0])
         self.checkBoxLeadingZeroes.setChecked(settings.value("leadingZeroes", False).toBool())
         self.checkBoxTimestamp.setChecked(settings.value("timestamp", False).toBool())
-        self.checkBoxRawText.setChecked(settings.value("rawText", False).toBool())
+
+        checkBoxState = settings.value("rawText", False).toInt()[0]
+        self.checkBoxRawText.setCheckState(checkBoxState)  # setting checkBox "checked" doesn't produce the event "stateChanged"
+        self.onCheckBoxRawTextStateChanged(checkBoxState)  # so we call self.onCheckBoxRawTextStateChanged implicitly
 
     def closeEvent(self, event):
         self.__saveSettings()
