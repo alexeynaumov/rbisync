@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-# Copyright (C) 2015,2016 Alexey Naumov <rocketbuzzz@gmail.com>
+# Copyright (C) 2015-2016 Alexey Naumov <rocketbuzzz@gmail.com>
 #
 # This file is part of rbisync.
 #
@@ -26,7 +26,7 @@ import termios
 from PyQt4.QtCore import QTime, QStringList, QString, QSettings, QByteArray, Qt, QObject, SIGNAL
 from PyQt4.QtGui import QDialog, QIcon
 from rhelpers.utils import stringToBytes, bytesToString, History
-from rserial.io import IO
+from rserial.io import IOException
 from rbisync.bisync import Bisync
 from bdbg.ui_Dialog import Ui_Dialog
 
@@ -244,13 +244,13 @@ class Dialog(QDialog, Ui_Dialog):
                 self.__bisync.port = self.lineEditDevice.text()
                 self.__bisync.baudRate = int(self.comboBoxBaudRate.currentText())
                 self.__bisync.byteSize = int(self.comboBoxDataBits.currentText())
-                self.__bisync.parity = [IO.PARITY_NONE, IO.PARITY_EVEN, IO.PARITY_ODD, IO.PARITY_MARK, IO.PARITY_SPACE][self.comboBoxParity.currentIndex()]
-                self.__bisync.stopBits = [IO.STOPBITS_ONE, IO.STOPBITS_ONE_POINT_FIVE, IO.STOPBITS_TWO][self.comboBoxStopBits.currentIndex()]
+                self.__bisync.parity = [Bisync.PARITY_NONE, Bisync.PARITY_EVEN, Bisync.PARITY_ODD, Bisync.PARITY_MARK, Bisync.PARITY_SPACE][self.comboBoxParity.currentIndex()]
+                self.__bisync.stopBits = [Bisync.STOPBITS_ONE, Bisync.STOPBITS_ONE_POINT_FIVE, Bisync.STOPBITS_TWO][self.comboBoxStopBits.currentIndex()]
                 self.__bisync.onRead = self.onRead
                 self.__bisync.open()
                 self.__disablePortSettings()
                 self.pushButtonOpenClose.setText("Close")
                 self.pushButtonSend.setEnabled(True)
                 self.lineEditData.setEnabled(True)
-            except Exception as error:
-                self.__postText("E[?]: Error opening port. %s Try 'sudo chmod o=rw %s'" % (str(error).capitalize(), self.lineEditDevice.text()))
+            except IOException as exception:
+                self.__postText((str(exception).capitalize()))

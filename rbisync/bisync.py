@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-# Copyright (C) 2015,2016 Alexey Naumov <rocketbuzzz@gmail.com>
+# Copyright (C) 2015-2016 Alexey Naumov <rocketbuzzz@gmail.com>
 #
 # This file is part of rbisync.
 #
@@ -48,6 +48,11 @@ MODE = LEGACY
 
 
 class Bisync(Serial):
+
+    PARITY_NONE, PARITY_EVEN, PARITY_ODD, PARITY_MARK, PARITY_SPACE = (Serial.PARITY_NONE, Serial.PARITY_EVEN, Serial.PARITY_ODD, Serial.PARITY_MARK, Serial.PARITY_SPACE)
+    STOPBITS_ONE, STOPBITS_ONE_POINT_FIVE, STOPBITS_TWO = (Serial.STOPBITS_ONE, Serial.STOPBITS_ONE_POINT_FIVE, Serial.STOPBITS_TWO)
+    FIVEBITS, SIXBITS, SEVENBITS, EIGHTBITS = (Serial.FIVEBITS, Serial.SIXBITS, Serial.SEVENBITS, Serial.EIGHTBITS)
+
     def __init__(self, parent=None):
         Serial.__init__(self, parent)
 
