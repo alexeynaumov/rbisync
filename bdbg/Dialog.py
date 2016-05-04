@@ -33,6 +33,11 @@ from bdbg.ui_Dialog import Ui_Dialog
 ICON_ROCKET = os.path.dirname(__file__) + "/icons/rocket.svg"
 
 
+def onError(message, data):
+    print message
+    print data
+
+
 class Dialog(QDialog, Ui_Dialog):
     def __init__(self, parent=None):
         QDialog.__init__(self, parent)
@@ -184,6 +189,10 @@ class Dialog(QDialog, Ui_Dialog):
 
         self.__postText("R[%s:%s]: %s" % (dataFormat, len(data), text))
 
+    def onError(self, error):
+        errorCode, errorDescription = error
+        self.__postText("E[%s]: %s" % (errorCode, errorDescription))
+
     def onPushButtonSendClicked(self):
         if not self.__bisync.isOpen:
             self.__postText("E[?]: Port is not open.")
@@ -247,6 +256,7 @@ class Dialog(QDialog, Ui_Dialog):
                 self.__bisync.parity = [Bisync.PARITY_NONE, Bisync.PARITY_EVEN, Bisync.PARITY_ODD, Bisync.PARITY_MARK, Bisync.PARITY_SPACE][self.comboBoxParity.currentIndex()]
                 self.__bisync.stopBits = [Bisync.STOPBITS_ONE, Bisync.STOPBITS_ONE_POINT_FIVE, Bisync.STOPBITS_TWO][self.comboBoxStopBits.currentIndex()]
                 self.__bisync.onRead = self.onRead
+                self.__bisync.onError = self.onError
                 self.__bisync.open()
                 self.__disablePortSettings()
                 self.pushButtonOpenClose.setText("Close")
@@ -254,3 +264,4 @@ class Dialog(QDialog, Ui_Dialog):
                 self.lineEditData.setEnabled(True)
             except IOException as exception:
                 self.__postText((str(exception).capitalize()))
+

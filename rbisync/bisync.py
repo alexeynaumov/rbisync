@@ -39,9 +39,7 @@ STATE_TX_FINISHED = 2
 STATE_RX_STARTED = 3
 STATE_RX_FINISHED = 4
 
-STATE = ["IDLE", "TX_STARTED", "TX_FINISHED", "RX_STARTED", "RX_FINISHED"]
-
-ATTEMPT_TIMEOUT = {1: 2000, 2: 2000, 3: 2000}
+ATTEMPT_TIMEOUT = {1: 2000, 2: 4000, 3: 6000}
 MAX_ATTEMPT = len(ATTEMPT_TIMEOUT)
 
 MODE = LEGACY
@@ -56,7 +54,7 @@ class Bisync(Serial):
     def __init__(self, parent=None):
         Serial.__init__(self, parent)
 
-        self._Serial__on_read = self.__read
+        self._Serial__on_read = self.__read  # watch out!
 
         self.__state = STATE_IDLE  # initial state
         self.__traffic = ""  # no data received yet
@@ -73,10 +71,24 @@ class Bisync(Serial):
     def __onTimeout(self):
         if self.__state != STATE_IDLE:
             if self.__attempt < MAX_ATTEMPT:
+                errorCode = -1
+                data = self.__txData
+                data = data[1:]
+                data = data[:-2]
+                errorDescription = "Failed to write data after %s attempt(s): %s" % (self.__attempt, data)
+                error = (errorCode, errorDescription)
+                self.__onError(error)
+
                 self.__attempt += 1
                 self.__stateTimer.start(ATTEMPT_TIMEOUT[self.__attempt])
                 self.__ENQ()
             else:
+                if self.__on_error:
+                    errorCode = -1
+                    errorDescription = "Remote peer is unreachable."
+                    error = (errorCode, errorDescription)
+                    self.__onError(error)
+
                 self.__attempt = 0
                 self.__state = STATE_IDLE
                 self.__txData = ""
@@ -145,6 +157,7 @@ class Bisync(Serial):
         self.__txData = ""
         self.__wait_for = None
         Serial.write(self, EOT)
+        self.__stateTimer.stop()  # do I really need this?
 
     def __ON_EOT(self):
         self.__state = STATE_IDLE
@@ -191,8 +204,10 @@ class Bisync(Serial):
                         checksum_after ^= ord(char)
 
                     if checksum_after != checksum_before:
-                        if self.__on_error:
-                            self.__on_error(255, "Checksum error in %s. Expected value: %s, received value: %s !" % (message, checksum_after, checksum_before))
+                        errorCode = -1
+                        errorDescription = "Checksum error in %s. Expected value: %s, received value: %s" % (message, checksum_after, checksum_before)
+                        error = (errorCode, errorDescription)
+                        self.__onError(error)
 
                     # elapsed time check
                     self.__onReadyRead(message)
@@ -252,9 +267,9 @@ class Bisync(Serial):
         if self.__on_read:
             self.__on_read(message)
 
-    def __onError(self, code, description):
+    def __onError(self, error):
         if self.__on_error:
-            self.__on_error(code, description)
+            self.__on_error(error)
 
     def write(self, message):
         # if re.search(r'\s+', message):
@@ -269,7 +284,7 @@ class Bisync(Serial):
         for char in message + ETX:
             checksum ^= ord(char)
 
-        self.__txData = STX + message + ETX + chr(checksum)
+        self.__txData = STX + message + ETX + chr(checksum)  # make a message
         self.__ENQ()
 
     @property
