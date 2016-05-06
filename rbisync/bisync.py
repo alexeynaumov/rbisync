@@ -50,8 +50,8 @@ STATE_RX_FINISHED = 4
 # for debug purposes
 CODE_STATE = {0: "IDLE", 1: "TX_STARTED", 2: "TX_FINISHED", 3: "RX_STARTED", 4: "RX_FINISHED"}
 
-ATTEMPT_TIMEOUT = {1: 2000, 2: 2000, 3: 2000}
-MAX_ATTEMPT = len(ATTEMPT_TIMEOUT)
+RETRY_TIMEOUT = {1: 1500, 2: 1500}
+MAX_RETRY = len(RETRY_TIMEOUT)
 
 
 # for debug purposes
@@ -61,6 +61,10 @@ def PRINT(string):
     print("%s | %s" % (now, string))
 
 MODE = LEGACY
+
+ACK_EXPIRATION = 500
+MESSAGE_EXPIRATION = 5000
+EOT_EXPIRATION = 500
 
 class Bisync(Serial):
 
@@ -73,7 +77,7 @@ class Bisync(Serial):
 
         self._Serial__on_read = self.__read  # watch out! Bisync.__read set as the parent's callback
 
-        self.__state = STATE_IDLE  # initial state
+        self.__state = STATE_IDLE  # default state
         self.__traffic = ""  # no data received yet (it is incoming data)
         self.__messages = []  # no messages to transmit yet (it is the user messages queue)
         self.__txData = ""  # no data to transmit yet (it is a string of: STX + message + ETX + chr(checksum))
@@ -81,25 +85,44 @@ class Bisync(Serial):
         self.__on_read = None  # on-read callback
         self.__on_error = None  # on-error callback
 
-        self.__attempt = 0
-        self.__stateTimer = QTimer(self)
-        self.__stateTimer.timeout.connect(self.__onTimeout)
-        self.__stateTimer.setSingleShot(True)
+        self.__retry = 0
 
-    def __onTimeout(self):
-        if self.__state != STATE_IDLE:
+        # Timers
+        self.__retryToSendTimer = QTimer(self)
+        self.__retryToSendTimer.setSingleShot(True)
+        self.__retryToSendTimer.timeout.connect(self.__onRetry)
 
-            if self.__attempt < MAX_ATTEMPT:  # we failed, but we are still trying to send the message
+        self.__timer_ACK_Expires = QTimer(self)
+        self.__timer_ACK_Expires.timeout.connect(self.__on_ACK_Expires)
+        self.__timer_ACK_Expires.setSingleShot(True)
+        self.__timer_ACK_Expires.setInterval(ACK_EXPIRATION)
+
+        self.__timer_MESSAGE_Expires = QTimer(self)
+        self.__timer_MESSAGE_Expires.timeout.connect(self.__on_MESSAGE_Expires)
+        self.__timer_MESSAGE_Expires.setSingleShot(True)
+        self.__timer_MESSAGE_Expires.setInterval(MESSAGE_EXPIRATION)
+
+        self.__timer_EOT_Expires = QTimer(self)
+        self.__timer_EOT_Expires.timeout.connect(self.__on_EOT_Expires)
+        self.__timer_EOT_Expires.setSingleShot(True)
+        self.__timer_EOT_Expires.setInterval(EOT_EXPIRATION)
+
+    def __onRetry(self):
+        self.__write(self.__message)
+
+    def __on_ACK_Expires(self):
+        if self.__state == STATE_TX_STARTED:
+
+            if self.__retryCount < MAX_RETRY:  # we failed, but we are still trying to send the message
                 errorCode = -1  # error notification
-                data = self.__txData
-                data = data[1:-2]  # remove STX, ETX and checksum
-                errorDescription = "Failed to write data after %s attempt(s): %s" % (self.__attempt, data)
+                data = self.__txData[1:-2]  # remove STX, ETX and checksum
+                errorDescription = "No ACK for too long after %s attempt(s) before sending the message: %s" % (self.__retryCount+1, data)
                 error = (errorCode, errorDescription)
                 self.__onError(error)
 
-                self.__attempt += 1  # update the state for the next attempt
-                self.__stateTimer.start(ATTEMPT_TIMEOUT[self.__attempt])
-                self.__ENQ()  # and try again <<<===================NEXT ATTEMPT TO SEND THE CURRENT MESSAGE STARTS HERE
+                self.__retryCount += 1
+                self.__retryToSendTimer.setInterval(RETRY_TIMEOUT[self.__retryCount])
+                self.__retryToSendTimer.start()
 
             else:  # we gave up and send the next message
                 errorCode = -1  # error notification
@@ -107,16 +130,76 @@ class Bisync(Serial):
                 error = (errorCode, errorDescription)
                 self.__onError(error)
 
-                self.__attempt = 0  # initialize the state for the next message
+                self.__retryCount = 0  # reset the state to defaults
                 self.__state = STATE_IDLE
                 self.__txData = ""
                 self.__wait_for = None
 
                 self.__next()  # send the next message (FAILURE CASE) <<<===TRANSMISSION OF THE NEXT MESSAGE STARTS HERE
 
+        elif self.__state == STATE_TX_FINISHED:
+            errorCode = -1
+            errorDescription = "No ACK for too long AFTER sending the message."
+            error = (errorCode, errorDescription)
+            self.__onError(error)
+
+            self.__ON_ACK()  # pretend that we received it
+
+        else:
+            pass
+
+
+    def __on_MESSAGE_Expires(self):
+        errorCode = -1
+        errorDescription = "No message for too long. Going to IDLE by force."
+        error = (errorCode, errorDescription)
+        self.__onError(error)
+
+        #TO-DO: gotta send NAK
+        self.__traffic = ""
+        self.__state = STATE_IDLE
+
+    def __on_EOT_Expires(self):
+        errorCode = -1
+        errorDescription = "No EOT for too long. Going to IDLE by force."
+        error = (errorCode, errorDescription)
+        self.__onError(error)
+
+        self.__ON_EOT()  # pretend that we received it
+
+
+    def __onTimeout(self):
+        pass
+        # if self.__state != STATE_IDLE:
+        #
+        #     if self.__retryCount < MAX_RETRY:  # we failed, but we are still trying to send the message
+        #         errorCode = -1  # error notification
+        #         data = self.__txData
+        #         data = data[1:-2]  # remove STX, ETX and checksum
+        #         errorDescription = "Failed to write data after %s attempt(s): %s" % (self.__retryCount, data)
+        #         error = (errorCode, errorDescription)
+        #         self.__onError(error)
+        #
+        #         self.__retryCount += 1  # update the state for the next attempt
+        #         self.__retryToSendTimer.start(RETRY_TIMEOUT[self.__retryCount])
+        #         self.__ENQ()  # and try again <<<===================NEXT ATTEMPT TO SEND THE CURRENT MESSAGE STARTS HERE
+        #
+        #     else:  # we gave up and send the next message
+        #         errorCode = -1  # error notification
+        #         errorDescription = "Remote peer is not responding."
+        #         error = (errorCode, errorDescription)
+        #         self.__onError(error)
+        #
+        #         self.__retryCount = 0  # reset the state to defaults
+        #         self.__state = STATE_IDLE
+        #         self.__txData = ""
+        #         self.__wait_for = None
+        #
+        #         self.__next()  # send the next message (FAILURE CASE) <<<===TRANSMISSION OF THE NEXT MESSAGE STARTS HERE
+
     def __next(self):
         if self.__messages:
-            self.__message = self.__messages[0]  # store the message being sent in self.__message for the ON_NAK case
+            self.__message = self.__messages[0]
             self.__messages = self.__messages[1:]
             self.__write(self.__message)
 
@@ -127,7 +210,7 @@ class Bisync(Serial):
         self.__state = STATE_TX_STARTED
         Serial.write(self, ENQ)
         self.__wait(ACK)
-
+        self.__timer_ACK_Expires.start()
 
     def __ON_ENQ(self):
         if DEBUG:
@@ -135,9 +218,10 @@ class Bisync(Serial):
 
         if MODE == LEGACY:
             #=== LEGACY ================================================================================================
-            if self.__state in [STATE_IDLE, STATE_RX_STARTED, STATE_RX_FINISHED]:
+            if self.__state in [STATE_IDLE, STATE_RX_STARTED, STATE_RX_FINISHED]:  # watch out the list of states!
                 self.__state = STATE_RX_STARTED
                 self.__ACK()
+                self.__timer_MESSAGE_Expires.start()
             else:
                 self.__NAK()
             #===========================================================================================================
@@ -160,8 +244,8 @@ class Bisync(Serial):
 
         if self.__state == STATE_RX_STARTED:
             Serial.write(self, ACK)
-            #pattern = r"%s(?P<message>[0-9]+)%s(?P<checksum>.{1})" % (STX, ETX)  # only decimals
-            pattern = r"%s(?P<message>.+)%s(?P<checksum>.{1})" % (STX, ETX)  # any character
+            #pattern = r"%s(?P<message>[0-9]+)%s(?P<checksum>.{1})" % (STX, ETX)  # allow only decimals
+            pattern = r"%s(?P<message>.+)%s(?P<checksum>.{1})" % (STX, ETX)  # allow any character
             self.__wait(pattern)
             return
 
@@ -173,14 +257,16 @@ class Bisync(Serial):
         if DEBUG:
             PRINT("RX: ACK")
 
+        self.__timer_ACK_Expires.stop()
+
         if self.__state == STATE_TX_STARTED:
             if DEBUG:
-                data = self.__txData
-                PRINT("TX: MESSAGE: %s" % data[1:-2])
+                PRINT("TX: MESSAGE: %s" % self.__txData[1:-2])
 
             Serial.write(self, self.__txData)
             self.__state = STATE_TX_FINISHED
             self.__wait(ACK)
+            self.__timer_ACK_Expires.start()
             return
 
         if self.__state == STATE_TX_FINISHED:
@@ -205,19 +291,19 @@ class Bisync(Serial):
         self.__txData = ""
         self.__wait_for = None
         self.__state = STATE_IDLE
-        self.__stateTimer.stop()
+        self.__retryToSendTimer.stop()
         # TO-DO: we're supposed to try to send the message again after timeout expires.
 
     def __EOT(self):
         if DEBUG:
             PRINT("TX: EOT")
 
-        self.__attempt = 0  # initialize the state
+        self.__retryCount = 0  # reset the state to defaults
         self.__state = STATE_IDLE
         self.__txData = ""
         self.__wait_for = None
         Serial.write(self, EOT)  # notify the peer we're done
-        self.__stateTimer.stop()  # do I really need this? # <<<=======TRANSMISSION OF THE CURRENT MESSAGE FINISHED HERE
+        self.__retryToSendTimer.stop()  # do I really need this? # <<<=======TRANSMISSION OF THE CURRENT MESSAGE FINISHED HERE
         self.__next()  # send the next message (SUCCESS CASE) <<<=========TRANSMISSION OF THE NEXT MESSAGE STARTS HERE
 
     def __ON_EOT(self):
@@ -270,36 +356,37 @@ class Bisync(Serial):
             if self.__state == STATE_RX_STARTED:
                 self.__traffic += data
 
-                # values = []
-                # for value in self.__traffic:
-                #     values.append(ord(value))
-                # print "TRAFFIC: %s " % bytesToString(values, 10)
-                # print "WAITFOR: %s " % self.__wait_for
-
                 match = re.match(self.__wait_for, self.__traffic)
                 if match:
                     message = match.group('message')
 
-                    checksum_before = ord(match.group('checksum'))
-                    checksum_after = 0
+                    checksum_remote = ord(match.group('checksum'))
+                    checksum_local = 0
                     for char in message + ETX:
-                        checksum_after ^= ord(char)
+                        checksum_local ^= ord(char)
 
-                    print "RX checksum_before: %s " % checksum_before
-                    print "RX checksum_after : %s " % checksum_after
+                    print "RX checksum_remote: %s " % checksum_remote
+                    print "RX checksum_local : %s " % checksum_local
 
-                    if checksum_after != checksum_before:
+                    checksum_ok = True if checksum_local == checksum_remote else False
+                    if checksum_ok:
+                        self.__onReadyRead(message)
+                        self.__traffic = ""
+                        self.__state = STATE_RX_FINISHED
+                        self.__ACK()
+                        self.__timer_EOT_Expires.start()
+                    else:
+                        self.__onReadyRead(message)
                         errorCode = -1
-                        errorDescription = "Checksum error in %s. Expected value: %s, received value: %s" % (message, checksum_after, checksum_before)
+                        errorDescription = "Checksum error in %s. Expected value: %s, received value: %s" % (message, checksum_local, checksum_remote)
                         error = (errorCode, errorDescription)
                         self.__onError(error)
 
-                    # elapsed time check
-                    self.__onReadyRead(message)
-
-                    self.__traffic = ""
-                    self.__state = STATE_RX_FINISHED
-                    self.__ACK()
+                        #TO-DO: gotta send NAK
+                        self.__traffic = ""
+                        self.__state = STATE_RX_FINISHED
+                        self.__ACK()
+                        self.__timer_EOT_Expires.start()
             #===========================================================================================================
 
         elif MODE == STRICT:
@@ -368,15 +455,11 @@ class Bisync(Serial):
         :param message: the  to write
         :return: None
         '''
-        self.__attempt += 1
-        self.__stateTimer.start(ATTEMPT_TIMEOUT[self.__attempt])
-
         checksum = 0
         for char in message + ETX:
             checksum ^= ord(char)
 
         self.__txData = STX + message + ETX + chr(checksum)  # make a message
-        print "TX checksum: %s " % checksum
         self.__ENQ()
 
     def __onError(self, error):
@@ -385,7 +468,6 @@ class Bisync(Serial):
         :param error tuple(errorCode(int), errorDescription(str)): the error occurred;
         :return: None
         '''
-
         if DEBUG:
             PRINT("ERROR: %s" % error[1])
 
@@ -399,7 +481,7 @@ class Bisync(Serial):
         :param message:
         :return: None
         '''
-        messages = str(message).split()  # in case we're trying to send something like "msg1 msg2  msg3"
+        messages = str(message).split()  # in case we're trying to send something like "msg1 msg2     msg3"
         self.__messages += messages
         self.__next()
 

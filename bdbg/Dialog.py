@@ -23,7 +23,7 @@ sys.path.append(os.path.abspath("../../rhelpers/"))
 sys.path.append(os.path.abspath("../../rserial/"))
 
 import termios
-from PyQt4.QtCore import QTime, QStringList, QString, QSettings, QByteArray, Qt, QObject, SIGNAL
+from PyQt4.QtCore import QTime, QStringList, QString, QSettings, QByteArray, Qt, QObject, SIGNAL, QTimer
 from PyQt4.QtGui import QDialog, QIcon
 from rhelpers.utils import stringToBytes, bytesToString, History
 from rserial.io import IOException
@@ -203,13 +203,13 @@ class Dialog(QDialog, Ui_Dialog):
             self.__postText("E[?]: No input provided.")
             return
 
-        self.__history.add(self.lineEditData.text())
+        self.__history.add(self.lineEditData.text())  # TO-DO
         
         data = QByteArray()
 
         if self.checkBoxRawText.isChecked():
             dataFormat = "S"
-            data = text.toLocal8Bit()
+            data = text.toLocal8Bit()  # TO-DO data = str(text)
 
         else:
             INDEX_BASE = {0: 2, 1: 8, 2: 10, 3: 16}
@@ -238,6 +238,7 @@ class Dialog(QDialog, Ui_Dialog):
         self.__bisync.write(data.data())
 
     def onPushButtonOpenCloseClicked(self):
+
         if self.__bisync.isOpen:
             try:
                 self.__bisync.close()
@@ -263,4 +264,3 @@ class Dialog(QDialog, Ui_Dialog):
                 self.lineEditData.setEnabled(True)
             except IOException as exception:
                 self.__postText((str(exception).capitalize()))
-
