@@ -19,17 +19,13 @@
 
 import sys, os
 sys.path.append(os.path.abspath("../../rserial/"))
-sys.path.append(os.path.abspath("../../rhelpers/"))
 
 import re
 from datetime import datetime
 from PyQt4.QtCore import QTimer
 from rserial.serial import Serial
-from rhelpers.utils import bytesToString
 
 DEBUG = True
-
-STRICT, LEGACY = 0, 1
 
 ENQ = chr(05)
 ACK = chr(06)
@@ -53,18 +49,15 @@ CODE_STATE = {0: "IDLE", 1: "TX_STARTED", 2: "TX_FINISHED", 3: "RX_STARTED", 4: 
 RETRY_TIMEOUT = {1: 1500, 2: 1500}
 MAX_RETRY = len(RETRY_TIMEOUT)
 
+ACK_EXPIRATION = 250
+MESSAGE_EXPIRATION = 5000
+EOT_EXPIRATION = 250
 
 # for debug purposes
 def PRINT(string):
     now = datetime.now()
     now = now.strftime("%H:%M:%S.%f")
     print("%s | %s" % (now, string))
-
-MODE = LEGACY
-
-ACK_EXPIRATION = 500
-MESSAGE_EXPIRATION = 5000
-EOT_EXPIRATION = 500
 
 class Bisync(Serial):
 
@@ -81,11 +74,10 @@ class Bisync(Serial):
         self.__traffic = ""  # no data received yet (it is incoming data)
         self.__messages = []  # no messages to transmit yet (it is the user messages queue)
         self.__txData = ""  # no data to transmit yet (it is a string of: STX + message + ETX + chr(checksum))
+        self.__retryCount = 0
         self.__wait_for = None  # waiting for nothing in received data
         self.__on_read = None  # on-read callback
         self.__on_error = None  # on-error callback
-
-        self.__retry = 0
 
         # Timers
         self.__retryToSendTimer = QTimer(self)
@@ -120,6 +112,10 @@ class Bisync(Serial):
                 error = (errorCode, errorDescription)
                 self.__onError(error)
 
+                self.__timer_ACK_Expires.stop()
+                self.__timer_MESSAGE_Expires.stop()
+                self.__timer_EOT_Expires.stop()
+
                 self.__retryCount += 1
                 self.__retryToSendTimer.setInterval(RETRY_TIMEOUT[self.__retryCount])
                 self.__retryToSendTimer.start()
@@ -148,7 +144,6 @@ class Bisync(Serial):
         else:
             pass
 
-
     def __on_MESSAGE_Expires(self):
         errorCode = -1
         errorDescription = "No message for too long. Going to IDLE by force."
@@ -166,36 +161,6 @@ class Bisync(Serial):
         self.__onError(error)
 
         self.__ON_EOT()  # pretend that we received it
-
-
-    def __onTimeout(self):
-        pass
-        # if self.__state != STATE_IDLE:
-        #
-        #     if self.__retryCount < MAX_RETRY:  # we failed, but we are still trying to send the message
-        #         errorCode = -1  # error notification
-        #         data = self.__txData
-        #         data = data[1:-2]  # remove STX, ETX and checksum
-        #         errorDescription = "Failed to write data after %s attempt(s): %s" % (self.__retryCount, data)
-        #         error = (errorCode, errorDescription)
-        #         self.__onError(error)
-        #
-        #         self.__retryCount += 1  # update the state for the next attempt
-        #         self.__retryToSendTimer.start(RETRY_TIMEOUT[self.__retryCount])
-        #         self.__ENQ()  # and try again <<<===================NEXT ATTEMPT TO SEND THE CURRENT MESSAGE STARTS HERE
-        #
-        #     else:  # we gave up and send the next message
-        #         errorCode = -1  # error notification
-        #         errorDescription = "Remote peer is not responding."
-        #         error = (errorCode, errorDescription)
-        #         self.__onError(error)
-        #
-        #         self.__retryCount = 0  # reset the state to defaults
-        #         self.__state = STATE_IDLE
-        #         self.__txData = ""
-        #         self.__wait_for = None
-        #
-        #         self.__next()  # send the next message (FAILURE CASE) <<<===TRANSMISSION OF THE NEXT MESSAGE STARTS HERE
 
     def __next(self):
         if self.__messages:
@@ -216,27 +181,12 @@ class Bisync(Serial):
         if DEBUG:
             PRINT("RX: ENQ")
 
-        if MODE == LEGACY:
-            #=== LEGACY ================================================================================================
-            if self.__state in [STATE_IDLE, STATE_RX_STARTED, STATE_RX_FINISHED]:  # watch out the list of states!
-                self.__state = STATE_RX_STARTED
-                self.__ACK()
-                self.__timer_MESSAGE_Expires.start()
-            else:
-                self.__NAK()
-            #===========================================================================================================
-
-        elif MODE == STRICT:
-            #=== STRICT ================================================================================================
-            if self.__state == STATE_IDLE:
-                self.__state = STATE_RX_STARTED
-                self.__ACK()
-            else:
-                self.__NAK()
-            #===========================================================================================================
-
+        if self.__state in [STATE_IDLE, STATE_RX_STARTED, STATE_RX_FINISHED]:  # watch out the list of states!
+            self.__state = STATE_RX_STARTED
+            self.__ACK()
+            self.__timer_MESSAGE_Expires.start()
         else:
-            raise Exception("Unknown operational mode.")
+            self.__NAK()
 
     def __ACK(self):
         if DEBUG:
@@ -303,12 +253,14 @@ class Bisync(Serial):
         self.__txData = ""
         self.__wait_for = None
         Serial.write(self, EOT)  # notify the peer we're done
-        self.__retryToSendTimer.stop()  # do I really need this? # <<<=======TRANSMISSION OF THE CURRENT MESSAGE FINISHED HERE
-        self.__next()  # send the next message (SUCCESS CASE) <<<=========TRANSMISSION OF THE NEXT MESSAGE STARTS HERE
+        self.__retryToSendTimer.stop()  # <<<==========================TRANSMISSION OF THE CURRENT MESSAGE FINISHED HERE
+        self.__next()  # send the next message (SUCCESS CASE) <<<===========TRANSMISSION OF THE NEXT MESSAGE STARTS HERE
 
     def __ON_EOT(self):
         if DEBUG:
             PRINT("RX: EOT")
+
+        self.__timer_EOT_Expires.stop()
 
         self.__state = STATE_IDLE
         self.__txData = ""
@@ -334,106 +286,56 @@ class Bisync(Serial):
                 self.__read(byte)
             return
 
-        if MODE == LEGACY:
-            #=== LEGACY ================================================================================================
-            if re.match(ENQ, data):
-                if self.__state in [STATE_IDLE, STATE_RX_STARTED, STATE_RX_FINISHED]:
-                    self.__ON_ENQ()
-                    return
-
-            if re.match(ACK, data):
-                if self.__state in [STATE_TX_STARTED, STATE_TX_FINISHED]:
-                    self.__ON_ACK()
-                    return
-
-            if self.__state == STATE_RX_FINISHED and re.match(EOT, data):
-                self.__ON_EOT()
-
-            if re.match(NAK, data):
-                self.__ON_NAK()
+        if re.match(ENQ, data):
+            if self.__state in [STATE_IDLE, STATE_RX_STARTED, STATE_RX_FINISHED]:
+                self.__ON_ENQ()
                 return
 
-            if self.__state == STATE_RX_STARTED:
-                self.__traffic += data
-
-                match = re.match(self.__wait_for, self.__traffic)
-                if match:
-                    message = match.group('message')
-
-                    checksum_remote = ord(match.group('checksum'))
-                    checksum_local = 0
-                    for char in message + ETX:
-                        checksum_local ^= ord(char)
-
-                    print "RX checksum_remote: %s " % checksum_remote
-                    print "RX checksum_local : %s " % checksum_local
-
-                    checksum_ok = True if checksum_local == checksum_remote else False
-                    if checksum_ok:
-                        self.__onReadyRead(message)
-                        self.__traffic = ""
-                        self.__state = STATE_RX_FINISHED
-                        self.__ACK()
-                        self.__timer_EOT_Expires.start()
-                    else:
-                        self.__onReadyRead(message)
-                        errorCode = -1
-                        errorDescription = "Checksum error in %s. Expected value: %s, received value: %s" % (message, checksum_local, checksum_remote)
-                        error = (errorCode, errorDescription)
-                        self.__onError(error)
-
-                        #TO-DO: gotta send NAK
-                        self.__traffic = ""
-                        self.__state = STATE_RX_FINISHED
-                        self.__ACK()
-                        self.__timer_EOT_Expires.start()
-            #===========================================================================================================
-
-        elif MODE == STRICT:
-            #=== STRICT ================================================================================================
-            if self.__state == STATE_IDLE:
-                if re.match(ENQ, data):
-                    self.__ON_ENQ()
-                    return
-
-                raise Exception("Received unknown symbol %s (not ENQ) while in state STATE_IDLE!" % ord(data))
-
+        if re.match(ACK, data):
             if self.__state in [STATE_TX_STARTED, STATE_TX_FINISHED]:
-                if re.match(ACK, data):
-                    self.__ON_ACK()
-                    return
+                self.__ON_ACK()
+                return
 
-                if re.match(NAK, data):
-                    self.__ON_NAK()
-                    return
+        if self.__state == STATE_RX_FINISHED and re.match(EOT, data):
+            self.__ON_EOT()
 
-                raise Exception("Received unknown symbol (neither ACK nor NAK): %s !" % ord(data))
+        if re.match(NAK, data):
+            self.__ON_NAK()
+            return
 
-            if self.__state == STATE_RX_STARTED:
-                self.__traffic += data
-                match = re.match(self.__wait_for, self.__traffic)
-                if match:
-                    message = match.group('message')
+        if self.__state == STATE_RX_STARTED:
+            self.__traffic += data
 
-                    checksum_before = ord(match.group('checksum'))
-                    checksum_after = 0
-                    for char in message + ETX:
-                        checksum_after ^= ord(char)
+            match = re.match(self.__wait_for, self.__traffic)
+            if match:
+                self.__timer_MESSAGE_Expires.stop()
 
-                    if checksum_after != checksum_before:
-                        self.__on_error(255, "Checksum error in %s. Expected value: %s, received value: %s !" % (message, checksum_after, checksum_before))
+                message = match.group('message')
 
-                    # elapsed time check
+                checksum_remote = ord(match.group('checksum'))
+                checksum_local = 0
+                for char in message + ETX:
+                    checksum_local ^= ord(char)
+
+                checksum_ok = True if checksum_local == checksum_remote else False
+                if checksum_ok:
                     self.__onReadyRead(message)
-
                     self.__traffic = ""
                     self.__state = STATE_RX_FINISHED
                     self.__ACK()
-            #===========================================================================================================
+                    self.__timer_EOT_Expires.start()
+                else:
+                    self.__onReadyRead(message)
+                    errorCode = -1
+                    errorDescription = "Checksum error in %s. Expected value: %s, received value: %s" % (message, checksum_local, checksum_remote)
+                    error = (errorCode, errorDescription)
+                    self.__onError(error)
 
-        else:
-            raise Exception("Unknown operational mode.")
-
+                    #TO-DO: gotta send NAK
+                    self.__traffic = ""
+                    self.__state = STATE_RX_FINISHED
+                    self.__ACK()
+                    self.__timer_EOT_Expires.start()
 
     def __onReadyRead(self, message):
         '''
