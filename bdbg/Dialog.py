@@ -237,7 +237,6 @@ class Dialog(QDialog, Ui_Dialog):
         self.__postText("T[%s:%s]: %s" % (dataFormat, len(data), text))
         self.__bisync.write(data.data())
 
-
     def onPushButtonOpenCloseClicked(self):
         if self.__bisync.isOpen:
             try:
