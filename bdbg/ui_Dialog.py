@@ -2,11 +2,10 @@
 
 # Form implementation generated from reading ui file 'Dialog.ui'
 #
-# Created: Thu Feb 18 00:31:52 2016
+# Created: Sat May  7 21:58:45 2016
 #      by: PyQt4 UI code generator 4.10.4
 #
 # WARNING! All changes made in this file will be lost!
-
 
 from PyQt4 import QtCore, QtGui
 from rhelpers.widgets import LineEdit
@@ -35,7 +34,6 @@ class Ui_Dialog(object):
         self.verticalLayout_2.setSizeConstraint(QtGui.QLayout.SetMaximumSize)
         self.verticalLayout_2.setObjectName(_fromUtf8("verticalLayout_2"))
         self.textEditTraffic = QtGui.QTextEdit(Dialog)
-        self.textEditTraffic.setEnabled(False)
         self.textEditTraffic.setObjectName(_fromUtf8("textEditTraffic"))
         self.verticalLayout_2.addWidget(self.textEditTraffic)
         self.horizontalLayout = QtGui.QHBoxLayout()
@@ -163,7 +161,7 @@ class Ui_Dialog(object):
         Dialog.setTabOrder(self.checkBoxTimestamp, self.textEditTraffic)
 
     def retranslateUi(self, Dialog):
-        Dialog.setWindowTitle(_translate("Dialog", "BSC debugger - 1.1.1", None))
+        Dialog.setWindowTitle(_translate("Dialog", "BSC debugger - 1.2.1", None))
         self.pushButtonSend.setText(_translate("Dialog", "Send", None))
         self.labelDevice.setText(_translate("Dialog", "Device:", None))
         self.lineEditDevice.setText(_translate("Dialog", "/dev/ttyS0", None))

@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>BSC debugger - 1.1.1</string>
+   <string>BSC debugger - 1.2.1</string>
   </property>
   <layout class="QGridLayout" name="gridLayout">
    <item row="0" column="0" rowspan="17">
@@ -20,11 +20,7 @@
       <enum>QLayout::SetMaximumSize</enum>
      </property>
      <item>
-      <widget class="QTextEdit" name="textEditTraffic">
-       <property name="enabled">
-        <bool>false</bool>
-       </property>
-      </widget>
+      <widget class="QTextEdit" name="textEditTraffic"/>
      </item>
      <item>
       <layout class="QHBoxLayout" name="horizontalLayout">
