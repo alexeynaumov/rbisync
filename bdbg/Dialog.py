@@ -33,11 +33,6 @@ from bdbg.ui_Dialog import Ui_Dialog
 ICON_ROCKET = os.path.dirname(__file__) + "/icons/rocket.svg"
 
 
-def onError(message, data):
-    print message
-    print data
-
-
 class Dialog(QDialog, Ui_Dialog):
     def __init__(self, parent=None):
         QDialog.__init__(self, parent)
