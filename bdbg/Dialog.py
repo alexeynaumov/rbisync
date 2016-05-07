@@ -194,17 +194,16 @@ class Dialog(QDialog, Ui_Dialog):
             return
 
         text = self.lineEditData.text().simplified()
-        if text.isEmpty():
+        text = str(text)
+        if not text:
             self.__postText("E[?]: No input provided.")
             return
 
-        self.__history.add(self.lineEditData.text())  # TO-DO
-        
-        data = QByteArray()
+        self.__history.add(text)
 
         if self.checkBoxRawText.isChecked():
             dataFormat = "S"
-            data = text.toLocal8Bit()  # TO-DO data = str(text)
+            data = text
 
         else:
             INDEX_BASE = {0: 2, 1: 8, 2: 10, 3: 16}
@@ -212,14 +211,17 @@ class Dialog(QDialog, Ui_Dialog):
             base = INDEX_BASE.get(index, None)
             if not base:
                 self.__postText("E[?]: Invalid base of a number.")
+                return
 
             try:
-                values = stringToBytes(str(text), base)
+                values = stringToBytes(text, base)
             except ValueError as error:
                 self.__postText("E[?]: Incorrect input: <%s>." % str(error).capitalize())
+                return
 
+            data = ""
             for value in values:
-                data.append(chr(value))
+                data += chr(value)
 
             text = bytesToString(values, base, self.checkBoxLeadingZeroes.isChecked())
 
@@ -227,10 +229,11 @@ class Dialog(QDialog, Ui_Dialog):
             dataFormat = INDEX_FORMAT.get(index, None)
             if not dataFormat:
                 self.__postText("E[?]: Invalid data format.")
+                return
 
         self.lineEditData.clear()
         self.__postText("T[%s:%s]: %s" % (dataFormat, len(data), text))
-        self.__bisync.write(data.data())
+        self.__bisync.write(data)
 
     def onPushButtonOpenCloseClicked(self):
 
