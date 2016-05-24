@@ -4,7 +4,7 @@
 #
 # This file is part of rbisync.
 #
-# rserial is free software: you can redistribute it and/or modify
+# rbisync is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 2 of the License, or (at
 # your option) any later version.
@@ -25,9 +25,10 @@ from datetime import datetime
 from PyQt4.QtCore import QTimer
 from rserial.serial import Serial
 
+
 DEBUG = False  # if set True, debug messages are sent to stdout
 
-STRICT = False  # if set True, the behaviour is close to BSC protocol spec, otherwise it is optimised for 1305 device
+STRICT = False  # if set True, the behaviour is close to BSC protocol spec, otherwise it is optimised for 1305-4 device
 
 ENQ = chr(05)
 ACK = chr(06)
@@ -42,12 +43,12 @@ STATE_TX_FINISHED = 2
 STATE_RX_STARTED = 3
 STATE_RX_FINISHED = 4
 
-RETRY_TIMEOUT = {1: 1500, 2: 1500}  # 1st retry (key) to send a message occurs after (value) milli-seconds
+RETRY_TIMEOUT = {1: 1500, 2: 1500}  # key=retry number, value=delay(milliseconds)
 MAX_RETRY = len(RETRY_TIMEOUT)
 
-ACK_EXPIRATION = 600  # the period of time we wait the peer to send ACK
-MESSAGE_EXPIRATION = 3000  # the period of time we wait the peer to send a message
-EOT_EXPIRATION = 600  # the period of time we wait the peer to send EOT
+ACK_EXPIRATION = 600  # (milliseconds), the period of time we wait the peer to send ACK
+MESSAGE_EXPIRATION = 3000  # (milliseconds), the period of time we wait the peer to send a message
+EOT_EXPIRATION = 600  # (milliseconds), the period of time we wait the peer to send EOT
 
 # errors
 CODE_DESCRIPTION = {
@@ -62,8 +63,8 @@ CODE_DESCRIPTION = {
 }
 
 # for debug purposes
-CODE_SYMBOL = {4: "EOT", 5: "ENQ", 6: "ACK", 21: "NAK"}
-CODE_STATE = {0: "IDLE", 1: "TX_STARTED", 2: "TX_FINISHED", 3: "RX_STARTED", 4: "RX_FINISHED"}
+CODE_SYMBOL = {ord(EOT): "EOT", ord(ENQ): "ENQ", ord(ACK): "ACK", ord(NAK): "NAK"}
+CODE_STATE = {STATE_IDLE: "IDLE", STATE_TX_STARTED: "TX_STARTED", STATE_TX_FINISHED: "TX_FINISHED", STATE_RX_STARTED: "RX_STARTED", STATE_RX_FINISHED: "RX_FINISHED"}
 
 def PRINT(string):
     now = datetime.now()
@@ -73,9 +74,8 @@ def PRINT(string):
 
 class Bisync(Serial):
     '''
-    Bisync class.
-    Usage:
-
+    Simple binary synchronous communications class.
+    NOTICE! RXD and TXD are the only pins used.
     '''
 
     PARITY_NONE, PARITY_EVEN, PARITY_ODD, PARITY_MARK, PARITY_SPACE = (Serial.PARITY_NONE, Serial.PARITY_EVEN, Serial.PARITY_ODD, Serial.PARITY_MARK, Serial.PARITY_SPACE)
@@ -322,7 +322,7 @@ class Bisync(Serial):
         self.__txData = ""
         self.__wait_for = None
         Serial.write(self, EOT)  # notify the peer we're done
-        self.__timer_retryToSend.stop()  # <<<==========================TRANSMISSION OF THE CURRENT MESSAGE FINISHED HERE
+        self.__timer_retryToSend.stop()  # <<<=========================TRANSMISSION OF THE CURRENT MESSAGE FINISHED HERE
         self.__next()  # send the next message (SUCCESS CASE) <<<===========TRANSMISSION OF THE NEXT MESSAGE STARTS HERE
 
     def __ON_EOT(self):
