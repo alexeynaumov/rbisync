@@ -16,19 +16,21 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+from logging import basicConfig
 
 import sys, os
 sys.path.append(os.path.abspath("../../rserial/"))
 
 import re
+import logging
 from datetime import datetime
 from PyQt4.QtCore import QTimer
 from rserial.serial import Serial
 
 
-DEBUG = False  # if set True, debug messages are sent to stdout
+DEBUG = True  # if set True, debug messages are sent to stdout
 
-STRICT = False  # if set True, the behaviour is close to BSC protocol spec, otherwise it is optimised for 1305-4 device
+STRICT = False  # if set True, the behaviour is close to BSC protocol spec
 
 ENQ = chr(05)
 ACK = chr(06)
@@ -66,10 +68,21 @@ CODE_DESCRIPTION = {
 CODE_SYMBOL = {ord(EOT): "EOT", ord(ENQ): "ENQ", ord(ACK): "ACK", ord(NAK): "NAK"}
 CODE_STATE = {STATE_IDLE: "IDLE", STATE_TX_STARTED: "TX_STARTED", STATE_TX_FINISHED: "TX_FINISHED", STATE_RX_STARTED: "RX_STARTED", STATE_RX_FINISHED: "RX_FINISHED"}
 
-def PRINT(string):
-    now = datetime.now()
-    now = now.strftime("%H:%M:%S.%f")
-    print("%s | %s" % (now, string))
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+handler = logging.StreamHandler(sys.stdout)
+handler.setLevel(logging.INFO)
+
+formatter = logging.Formatter('%(asctime)s: %(lineno)4d %(module)s.%(funcName)-12s >>> %(message)s')
+handler.setFormatter(formatter)
+
+logger.addHandler(handler)
+
+if DEBUG:
+    logging.disable(logging.NOTSET)
+else:
+    logging.disable(logging.INFO)
 
 
 class Bisync(Serial):
@@ -206,7 +219,7 @@ class Bisync(Serial):
         :return: None
         '''
         if DEBUG:
-            PRINT("TX: ENQ")
+            logger.info("TX: ENQ")
 
         self.__state = STATE_TX_STARTED
         Serial.write(self, ENQ)
@@ -219,7 +232,7 @@ class Bisync(Serial):
         :return: None
         '''
         if DEBUG:
-            PRINT("RX: ENQ")
+            logger.info("RX: ENQ")
 
         if STRICT:
             if self.__state != STATE_IDLE:
@@ -239,7 +252,7 @@ class Bisync(Serial):
         :return: None
         '''
         if DEBUG:
-            PRINT("TX: ACK")
+            logger.info("TX: ACK")
 
         if self.__state == STATE_RX_STARTED:
             Serial.write(self, ACK)
@@ -258,7 +271,7 @@ class Bisync(Serial):
         :return:
         '''
         if DEBUG:
-            PRINT("RX: ACK")
+            logger.info("RX: ACK")
 
         if self.__state not in [STATE_TX_STARTED, STATE_TX_FINISHED]:
             return
@@ -267,7 +280,7 @@ class Bisync(Serial):
 
         if self.__state == STATE_TX_STARTED:
             if DEBUG:
-                PRINT("TX: MESSAGE: %s" % self.__txData[1:-2])
+                logger.info("TX: MESSAGE: %s" % self.__txData[1:-2])
 
             Serial.write(self, self.__txData)
             self.__state = STATE_TX_FINISHED
@@ -285,7 +298,7 @@ class Bisync(Serial):
         :return: None
         '''
         if DEBUG:
-            PRINT("TX: NAK")
+            logger.info("TX: NAK")
 
         Serial.write(self, NAK)
 
@@ -295,7 +308,7 @@ class Bisync(Serial):
         :return: None
         '''
         if DEBUG:
-            PRINT("RX: NAK")
+            logger.info("RX: NAK")
 
         # "Remote peer didn't acknowledge transmission."
         errorCode = 6  # error notification
@@ -315,7 +328,7 @@ class Bisync(Serial):
         :return: None
         '''
         if DEBUG:
-            PRINT("TX: EOT")
+            logger.info("TX: EOT")
 
         self.__retryCount = 0  # reset the state to defaults
         self.__state = STATE_IDLE
@@ -331,7 +344,7 @@ class Bisync(Serial):
         :return: None
         '''
         if DEBUG:
-            PRINT("RX: EOT")
+            logger.info("RX: EOT")
 
         if self.__state != STATE_RX_FINISHED:
             return
@@ -354,7 +367,7 @@ class Bisync(Serial):
             else:
                 pattern = "MESSAGE"
 
-            PRINT("WAITING: %s" % pattern)
+            logger.info("WAITING: %s" % pattern)
 
         if not re_pattern:
             raise ValueError("Wrong argument. Have no idea what to wait for.")
@@ -430,7 +443,7 @@ class Bisync(Serial):
         '''
 
         if DEBUG:
-            PRINT("RX: MESSAGE: %s" % message)
+            logger.info("RX: MESSAGE: %s" % message)
 
         if self.__on_read:
             self.__on_read(message)
@@ -442,7 +455,7 @@ class Bisync(Serial):
         :return: None
         '''
         if DEBUG:
-            PRINT("ERROR: %s" % error[1])
+            logger.error("ERROR: %s" % error[1])
 
         if self.__on_error:
             self.__on_error(error)
