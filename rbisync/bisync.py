@@ -16,14 +16,12 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
-from logging import basicConfig
 
 import sys, os
 sys.path.append(os.path.abspath("../../rserial/"))
 
 import re
 import logging
-from datetime import datetime
 from PyQt4.QtCore import QTimer
 from rserial.serial import Serial
 
