@@ -46,9 +46,9 @@ STATE_RX_FINISHED = 4
 RETRY_TIMEOUT = {1: 1500, 2: 1500}  # key=retry number, value=delay(milliseconds)
 MAX_RETRY = len(RETRY_TIMEOUT)
 
-ACK_EXPIRATION = 600  # (milliseconds), the period of time we wait the peer to send ACK
+ACK_EXPIRATION = 900  # (milliseconds), the period of time we wait the peer to send ACK
 MESSAGE_EXPIRATION = 3000  # (milliseconds), the period of time we wait the peer to send a message
-EOT_EXPIRATION = 600  # (milliseconds), the period of time we wait the peer to send EOT
+EOT_EXPIRATION = 900  # (milliseconds), the period of time we wait the peer to send EOT
 
 # errors
 CODE_DESCRIPTION = {
