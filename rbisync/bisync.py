@@ -498,7 +498,9 @@ class Bisync(Serial):
         '''
         messages = str(message).split()  # in case we're trying to send something like "msg1 msg2     msg3"
         self.__messages += messages
-        self.__next()
+
+        if self.__state == STATE_IDLE:
+            self.__next()
 
     @property
     def onRead(self):
