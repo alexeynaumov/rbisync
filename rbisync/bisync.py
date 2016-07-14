@@ -17,7 +17,8 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import sys, os
+import sys
+import os
 sys.path.append(os.path.abspath("../../rserial/"))
 
 import re
@@ -179,7 +180,7 @@ class Bisync(Serial):
             self.__onError(error)
 
             if not STRICT:
-                self.__ON_ACK()  # pretend that we received it
+                self.__ON_ACK(peer=self)  # pretend that we received it
 
         else:
             pass
@@ -209,7 +210,7 @@ class Bisync(Serial):
         self.__onError(error)
 
         if not STRICT:
-            self.__ON_EOT()  # pretend that we received it
+            self.__ON_EOT(peer=self)  # pretend that we received it
 
     def __ENQ(self):
         '''
@@ -224,13 +225,14 @@ class Bisync(Serial):
         self.__wait(ACK)
         self.__timer_ACK_expires.start()
 
-    def __ON_ENQ(self):
+    def __ON_ENQ(self, peer=None):
         '''
         Called when ENQ is received from the peer.
         :return: None
         '''
         if DEBUG:
-            logger.info("RX: ENQ")
+            peer = "from SELF" if peer else "from PEER"
+            logger.info("RX: ENQ "+peer)
 
         if STRICT:
             if self.__state != STATE_IDLE:
@@ -263,13 +265,14 @@ class Bisync(Serial):
             Serial.write(self, ACK)
             self.__wait(EOT)
 
-    def __ON_ACK(self):
+    def __ON_ACK(self, peer=None):
         '''
         Called when ACK is received from the peer.
         :return:
         '''
         if DEBUG:
-            logger.info("RX: ACK")
+            peer = "from SELF" if peer else "from PEER"
+            logger.info("RX: ACK "+peer)
 
         if self.__state not in [STATE_TX_STARTED, STATE_TX_FINISHED]:
             return
@@ -300,13 +303,14 @@ class Bisync(Serial):
 
         Serial.write(self, NAK)
 
-    def __ON_NAK(self):
+    def __ON_NAK(self, peer=None):
         '''
         Called when NAK is received from the peer.
         :return: None
         '''
         if DEBUG:
-            logger.info("RX: NAK")
+            peer = "from SELF" if peer else "from PEER"
+            logger.info("RX: NAK "+peer)
 
         # "Remote peer didn't acknowledge transmission."
         errorCode = 6  # error notification
@@ -336,13 +340,14 @@ class Bisync(Serial):
         self.__timer_retryToSend.stop()  # <<<=========================TRANSMISSION OF THE CURRENT MESSAGE FINISHED HERE
         self.__next()  # send the next message (SUCCESS CASE) <<<===========TRANSMISSION OF THE NEXT MESSAGE STARTS HERE
 
-    def __ON_EOT(self):
+    def __ON_EOT(self, peer=None):
         '''
         Called when EOT is received from the peer.
         :return: None
         '''
         if DEBUG:
-            logger.info("RX: EOT")
+            peer = "from SELF" if peer else "from PEER"
+            logger.info("RX: EOT "+peer)
 
         if self.__state != STATE_RX_FINISHED:
             return
