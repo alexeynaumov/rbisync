@@ -27,8 +27,8 @@ from rserial.serial import Serial
 
 
 DEBUG = True  # if set True, debug messages are sent to stdout
-
 STRICT = False  # if set True, the behaviour is close to BSC protocol spec
+IGNORE_CHECKSUM_ERRORS = True
 
 ENQ = chr(05)
 ACK = chr(06)
@@ -46,9 +46,9 @@ STATE_RX_FINISHED = 4
 RETRY_TIMEOUT = {1: 1500, 2: 1500}  # key=retry number, value=delay(milliseconds)
 MAX_RETRY = len(RETRY_TIMEOUT)
 
-ACK_EXPIRATION = 900  # (milliseconds), the period of time we wait the peer to send ACK
+ACK_EXPIRATION = 1500  # (milliseconds), the period of time we wait the peer to send ACK
 MESSAGE_EXPIRATION = 3000  # (milliseconds), the period of time we wait the peer to send a message
-EOT_EXPIRATION = 900  # (milliseconds), the period of time we wait the peer to send EOT
+EOT_EXPIRATION = 1500  # (milliseconds), the period of time we wait the peer to send EOT
 
 # errors
 CODE_DESCRIPTION = {
@@ -418,6 +418,10 @@ class Bisync(Serial):
                     checksum_local ^= ord(char)
 
                 checksum_ok = True if checksum_local == checksum_remote else False
+
+                if IGNORE_CHECKSUM_ERRORS:
+                    checksum_ok = True
+
                 if checksum_ok:
                     self.__traffic = ""
                     self.__state = STATE_RX_FINISHED
