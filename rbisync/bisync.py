@@ -462,7 +462,7 @@ class Bisync(Serial):
         '''
         Write the data(str) <message> using the BSC protocol. The data is supposed to be a complete unit of meaning
         (a command, message, etc...) sent to the peer as a whole.
-        :param message: the  to write
+        :param message(str): data to write
         :return: None
         '''
         checksum = 0
@@ -491,13 +491,21 @@ class Bisync(Serial):
 
     def write(self, message):
         '''
-        Write the data(str) <message> using the BSC protocol. As self.__write, the data is either a complete unit of
-        meaning or a series of complete units of meaning(separated by white space: "msg1 msg2 msg3").
-        :param message:
+        Write data(either str or list of str)<message> using the BSC protocol. The data consists of either:
+        1. a single unit of meaning (e.g. "msg") of type str or;
+        2. a series of complete units of meaning separated by white space (e.g "msg1 msg2 msg3") of type str or;
+        3. a list of complete units of meaning (e.g. ["msg1", "msg2", "msg3"]) of type str.
+        :param message(either str or list of str): data to write
         :return: None
         '''
-        messages = str(message).split()  # in case we're trying to send something like "msg1 msg2     msg3"
-        self.__messages += messages
+        if isinstance(message, str):
+            messages = str(message).split()  # in case we're trying to send something like "msg1 msg2     msg3"
+            self.__messages += messages
+        elif isinstance(message, list):
+            for item in message:
+                self.__messages.append(item)
+        else:
+            raise TypeError("argument must be a string or a list of strings not {}".format(type(message).__name__))
 
         if self.__state == STATE_IDLE:
             self.__next()
