@@ -253,7 +253,7 @@ class Dialog(QDialog, Ui_Dialog):
                 self.__bisync.byteSize = int(self.comboBoxDataBits.currentText())
                 self.__bisync.parity = [Bisync.PARITY_NONE, Bisync.PARITY_EVEN, Bisync.PARITY_ODD, Bisync.PARITY_MARK, Bisync.PARITY_SPACE][self.comboBoxParity.currentIndex()]
                 self.__bisync.stopBits = [Bisync.STOPBITS_ONE, Bisync.STOPBITS_ONE_POINT_FIVE, Bisync.STOPBITS_TWO][self.comboBoxStopBits.currentIndex()]
-                self.__bisync.onRead = self.onRead
+                # self.__bisync.onRead = self.onRead
                 self.__bisync.onError = self.onError
                 self.__bisync.open()
                 self.__disablePortSettings()

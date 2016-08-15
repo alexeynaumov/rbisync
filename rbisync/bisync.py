@@ -19,11 +19,12 @@
 
 import sys
 import os
+
 sys.path.append(os.path.abspath("../../rserial/"))
 
 import re
 import logging
-from PyQt4.QtCore import QTimer
+from async import Dispatcher, AbstractHandle, singleton
 from rserial.serial import Serial
 
 
@@ -39,10 +40,11 @@ ETX = chr(03)
 EOT = chr(04)
 
 STATE_IDLE = 0
-STATE_TX_STARTED = 1
-STATE_TX_FINISHED = 2
-STATE_RX_STARTED = 3
-STATE_RX_FINISHED = 4
+STATE_ABOUT_TO_TX = 1
+STATE_TX_STARTED = 2
+STATE_TX_FINISHED = 3
+STATE_RX_STARTED = 4
+STATE_RX_FINISHED = 5
 
 RETRY_TIMEOUT = {1: 1500, 2: 1500}  # key=retry number, value=delay(milliseconds)
 MAX_RETRY = len(RETRY_TIMEOUT)
@@ -84,6 +86,151 @@ else:
     logging.disable(logging.INFO)
 
 
+class ENQ_For_ACK_Handle(AbstractHandle):
+    def __init__(self, serial):
+        AbstractHandle.__init__(self)
+        self.serial = serial
+        self.timeout = 15000
+
+    def __del__(self):
+        self.detach()
+
+    def onNewData(self, data):
+        if data == ACK:
+            print "RX ACK"
+            self.detach()
+            self.serial.state = STATE_TX_STARTED
+            self.serial.writeMessage()
+
+        if data == ENQ:
+            print "RX ENQ"
+            self.detach()
+            self.serial.state = STATE_IDLE
+            print "ERROR: Collision detected"
+
+        if data == NAK:
+            print "RX NAK"
+            self.detach()
+            self.serial.state = STATE_IDLE
+
+    def onTimeout(self):
+        self.detach()
+        self.serial.state = STATE_IDLE
+        print "ERROR: ACK timeout expired"
+
+
+class MESSAGE_For_ACK_Handle(AbstractHandle):
+    def __init__(self, serial):
+        AbstractHandle.__init__(self)
+        self.serial = serial
+        self.attemptCount = 0
+        self.timeout = 15000
+
+    def __del__(self):
+        self.detach()
+
+    def __call__(self, message):
+        self.__message = message
+
+        return self
+
+    def onNewData(self, data):
+        print "Got: ", data
+        if data == ACK:
+            print "RX ACK"
+            self.detach()
+            self.serial.state = STATE_TX_FINISHED
+            self.serial.writeEOT()
+            self.serial.state = STATE_IDLE
+
+            if self.serial.messages:
+                self.serial.writeENQ()
+
+        if data == NAK:
+            self.detach()
+            self.serial.state = STATE_IDLE
+            print "RX NAK"
+
+    def onTimeout(self):
+        self.detach()
+        self.serial.state = STATE_IDLE
+        #смотрим число повторов и вычисляем таймаут для следующей передачи
+        print "ACK Timeout expired"
+
+
+class ACK_For_MESSAGE_Handle(AbstractHandle):
+    def __init__(self, serial):
+        AbstractHandle.__init__(self)
+        self.serial = serial
+        self.timeout = 15000
+        self.__rxData = ""
+
+        messagePattern = r"%s(?P<message>.+)%s(?P<checksum>.{1})" % (STX, ETX)  # allow any character
+        self.__wait_for = re.compile(messagePattern)
+
+    def __del__(self):
+        self.detach()
+
+    def onNewData(self, data):
+        self.__rxData += data
+
+        match = re.match(self.__wait_for, self.__rxData)
+        if match:
+            self.detach()
+            self.__rxData = ""
+
+            message = match.group('message')
+
+            checksum_remote = ord(match.group('checksum'))  # the sum in the message, the peer calculated it
+            checksum_local = 0  # the sum we calculate based upon data received from the peer
+            for char in message + ETX:
+                checksum_local ^= ord(char)
+
+            checksum_ok = True if checksum_local == checksum_remote else False
+
+            if checksum_ok:
+                self.serial.onReadyRead(message)
+                self.serial.state = STATE_RX_FINISHED
+                self.serial.writeACK()
+            else:
+                # errorCode = 7
+                # errorDescription = "Checksum error in %s. Expected: %s, received: %s" % (message, checksum_local, checksum_remote)
+                # error = (errorCode, errorDescription)
+                # self.__onError(error)
+                self.onReadyRead(message)
+                print "CHECKSUM ERROR"
+                self.serial.writeNAK()
+
+    def onTimeout(self):
+        self.detach()
+        self.__rxData = ""
+        # изменяем состояние
+        # сообщаем об ошибка, переходим в IDLE
+
+    def onError(self, error):
+        self.detach()
+
+class ACK_For_EOT_Handle(AbstractHandle):
+    def __init__(self, serial):
+        AbstractHandle.__init__(self)
+        self.serial = serial
+        self.timeout = 15000
+
+    def __del__(self):
+        self.detach()
+
+    def onNewData(self, data):
+        if data == EOT:
+            self.detach()
+            # изменяем состояние
+            print "RX EOT"
+
+    def onTimeout(self):
+        self.detach()
+        # изменяем состояние
+        print "EOT Timeout expired"
+
+
 class Bisync(Serial):
     '''
     Simple binary synchronous communications class.
@@ -98,439 +245,101 @@ class Bisync(Serial):
         Serial.__init__(self, parent)
 
         self._Serial__on_read = self.__read  # watch out! self.__read set as the parent's callback
-
-        self.__state = STATE_IDLE  # default state
-        self.__traffic = ""  # no data received yet (it is received data from the peer)
-        self.__messages = []  # no messages to transmit yet (it is the user messages queue)
-        self.__txData = ""  # no data to transmit yet (it is a string of: STX + message + ETX + chr(checksum))
-        self.__retryCount = 0  # number of retries to send __txData (at the 1st attempt retryCount=0, at the 2nd attempt retryCount=1, at the 3rd attempt- retryCount=2,...)
-        self.__wait_for = None  # waiting for nothing in received data
-        self.__on_read = None  # on-read callback
-        self.__on_error = None  # on-error callback
-
-        # makes a data send retry (after a predefined timeout), if the message transmission failed
-        self.__timer_retryToSend = QTimer(self)
-        self.__timer_retryToSend.setSingleShot(True)
-        self.__timer_retryToSend.timeout.connect(self.__onRetry)
-
-        # checks if ACK (from the peer) is late or received at all
-        self.__timer_ACK_expires = QTimer(self)
-        self.__timer_ACK_expires.timeout.connect(self.__on_ACK_expires)
-        self.__timer_ACK_expires.setSingleShot(True)
-        self.__timer_ACK_expires.setInterval(ACK_EXPIRATION)
-
-        # checks if a message (from the peer) is late or received at all
-        self.__timer_MESSAGE_expires = QTimer(self)
-        self.__timer_MESSAGE_expires.timeout.connect(self.__on_MESSAGE_expires)
-        self.__timer_MESSAGE_expires.setSingleShot(True)
-        self.__timer_MESSAGE_expires.setInterval(MESSAGE_EXPIRATION)
-
-        # checks if EOT (from the peer) is late or received at all
-        self.__timer_EOT_expires = QTimer(self)
-        self.__timer_EOT_expires.timeout.connect(self.__on_EOT_expires)
-        self.__timer_EOT_expires.setSingleShot(True)
-        self.__timer_EOT_expires.setInterval(EOT_EXPIRATION)
-
-    def __onRetry(self):
-        '''
-        Called by self.__timer_retryToSend after timeout expires to make the next attempt to send data to the peer.
-        :return: None
-        '''
-        self.__write(self.__message)
-
-    def __on_ACK_expires(self):
-        '''
-        Called by self.__timer_ACK_expires when we're not going to wait for ACK from the peer any longer.
-        :return: None
-        '''
-        if self.__state == STATE_TX_STARTED:
-
-            if self.__retryCount < MAX_RETRY:  # we failed, but we are still trying to send the message
-                errorCode = 1  # error notification
-                data = self.__txData[1:-2]  # remove STX, ETX and checksum
-                errorDescription = "No ACK too long after %s attempt(s) before sending message: %s" % (self.__retryCount+1, data)
-                error = (errorCode, errorDescription)
-                self.__onError(error)
-
-                self.__timer_ACK_expires.stop()
-                self.__timer_MESSAGE_expires.stop()
-                self.__timer_EOT_expires.stop()
-
-                self.__retryCount += 1
-                self.__timer_retryToSend.setInterval(RETRY_TIMEOUT[self.__retryCount])
-                self.__timer_retryToSend.start()
-
-            else:  # we gave up and send the next message
-                errorCode = 2  # "Remote peer not responding."
-                errorDescription = self.__errorString(errorCode)
-                error = (errorCode, errorDescription)
-                self.__onError(error)
-
-                self.__retryCount = 0  # reset the state to defaults
-                self.__state = STATE_IDLE
-                self.__txData = ""
-                self.__wait_for = None
-
-                self.__next()  # send the next message (FAILURE CASE) <<<===TRANSMISSION OF THE NEXT MESSAGE STARTS HERE
-
-        elif self.__state == STATE_TX_FINISHED:
-            errorCode = 3  # "No ACK too long AFTER sending message."
-            errorDescription = self.__errorString(errorCode)
-            error = (errorCode, errorDescription)
-            self.__onError(error)
-
-            if not STRICT:
-                self.__ON_ACK(peer=self)  # pretend that we received it
-
-        else:
-            pass
-
-    def __on_MESSAGE_expires(self):
-        '''
-        Called by self.__timer_MESSAGE_expires when we're not going to wait for a message from the peer any longer.
-        :return: None
-        '''
-        errorCode = 4
-        errorDescription = "No message too long. Going to IDLE by force."
-        error = (errorCode, errorDescription)
-        self.__onError(error)
-
-        #TO-DO: gotta send NAK
-        self.__traffic = ""
         self.__state = STATE_IDLE
+        self.messages = []
 
-    def __on_EOT_expires(self):
-        '''
-        Called by self.__timer_EOT_expires when we're not going to wait for EOT from the peer any longer.
-        :return: None
-        '''
-        errorCode = 5
-        errorDescription = "No EOT too long. Going to IDLE by force."
-        error = (errorCode, errorDescription)
-        self.__onError(error)
+        self.ENQ_For_ACK_Handle = ENQ_For_ACK_Handle(self)
+        self.MESSAGE_For_ACK_Handle = MESSAGE_For_ACK_Handle(self)
+        self.ACK_For_MESSAGE_Handle = ACK_For_MESSAGE_Handle(self)
+        self.ACK_For_EOT_Handle = ACK_For_EOT_Handle(self)
 
-        if not STRICT:
-            self.__ON_EOT(peer=self)  # pretend that we received it
+        self.__dispatcher = Dispatcher()
 
-    def __ENQ(self):
-        '''
-        Send ENQ to the peer.
-        :return: None
-        '''
-        if DEBUG:
-            logger.info("TX: ENQ")
+    def setHandlerForMessageResponse(self, data, handle):
+        self.__write(data)
+        handle.attach()
 
-        self.__state = STATE_TX_STARTED
-        Serial.write(self, ENQ)
-        self.__wait(ACK)
-        self.__timer_ACK_expires.start()
+    def writeENQ(self):
+        self.state = STATE_ABOUT_TO_TX
+        self.setHandlerForMessageResponse(ENQ, self.ENQ_For_ACK_Handle)
 
-    def __ON_ENQ(self, peer=None):
-        '''
-        Called when ENQ is received from the peer.
-        :return: None
-        '''
-        if DEBUG:
-            peer = "from SELF" if peer else "from PEER"
-            logger.info("RX: ENQ "+peer)
+    def writeMessage(self):
+        if self.messages:
 
-        if STRICT:
-            if self.__state != STATE_IDLE:
-                self.__NAK()
-                return
+            message = self.messages[0]
+            self.messages = self.messages[1:]
+            print "TX Message: ", message
+            self.setHandlerForMessageResponse(message, self.MESSAGE_For_ACK_Handle(message))
 
-        if self.__state in [STATE_IDLE, STATE_RX_STARTED, STATE_RX_FINISHED]:  # watch out the list of states!
-            self.__state = STATE_RX_STARTED
-            self.__ACK()
-            self.__timer_MESSAGE_expires.start()
-        else:
-            self.__NAK()
+    def writeEOT(self):
+        print "TX: EOT"
+        Serial.write(self, EOT)
 
-    def __ACK(self):
-        '''
-        Send ACK to the peer.
-        :return: None
-        '''
-        if DEBUG:
-            logger.info("TX: ACK")
-
-        if self.__state == STATE_RX_STARTED:
-            Serial.write(self, ACK)
-            #pattern = r"%s(?P<message>[0-9]+)%s(?P<checksum>.{1})" % (STX, ETX)  # allow only decimals
-            pattern = r"%s(?P<message>.+)%s(?P<checksum>.{1})" % (STX, ETX)  # allow any character
-            self.__wait(pattern)
+    def writeACK(self):
+        print "TX: ACK"
+        if self.state == STATE_IDLE:
+            self.state = STATE_RX_STARTED
+            self.setHandlerForMessageResponse(ACK, self.ACK_For_MESSAGE_Handle)
             return
 
-        if self.__state == STATE_RX_FINISHED:
-            Serial.write(self, ACK)
-            self.__wait(EOT)
-
-    def __ON_ACK(self, peer=None):
-        '''
-        Called when ACK is received from the peer.
-        :return:
-        '''
-        if DEBUG:
-            peer = "from SELF" if peer else "from PEER"
-            logger.info("RX: ACK "+peer)
-
-        if self.__state not in [STATE_TX_STARTED, STATE_TX_FINISHED]:
+        if self.state == STATE_RX_FINISHED:
+            self.state = STATE_IDLE
+            self.setHandlerForMessageResponse(ACK, self.ACK_For_EOT_Handle)
             return
-
-        self.__timer_ACK_expires.stop()
-
-        if self.__state == STATE_TX_STARTED:
-            if DEBUG:
-                logger.info("TX: MESSAGE: %s" % self.__txData[1:-2])
-
-            Serial.write(self, self.__txData)
-            self.__state = STATE_TX_FINISHED
-            self.__wait(ACK)
-            self.__timer_ACK_expires.start()
-            return
-
-        if self.__state == STATE_TX_FINISHED:
-            self.__EOT()
-            return
-
-    def __NAK(self):
-        '''
-        Send NAK to the peer.
-        :return: None
-        '''
-        if DEBUG:
-            logger.info("TX: NAK")
-
-        Serial.write(self, NAK)
-
-    def __ON_NAK(self, peer=None):
-        '''
-        Called when NAK is received from the peer.
-        :return: None
-        '''
-        if DEBUG:
-            peer = "from SELF" if peer else "from PEER"
-            logger.info("RX: NAK "+peer)
-
-        # "Remote peer didn't acknowledge transmission."
-        errorCode = 6  # error notification
-        errorDescription = self.__errorString(errorCode)
-        error = (errorCode, errorDescription)
-        self.__onError(error)
-
-        self.__txData = ""
-        self.__wait_for = None
-        self.__state = STATE_IDLE
-        self.__timer_retryToSend.stop()
-        # TO-DO: we're supposed to try to send the message again after timeout expires.
-
-    def __EOT(self):
-        '''
-        Send EOT to the peer.
-        :return: None
-        '''
-        if DEBUG:
-            logger.info("TX: EOT")
-
-        self.__retryCount = 0  # reset the state to defaults
-        self.__state = STATE_IDLE
-        self.__txData = ""
-        self.__wait_for = None
-        Serial.write(self, EOT)  # notify the peer we're done
-        self.__timer_retryToSend.stop()  # <<<=========================TRANSMISSION OF THE CURRENT MESSAGE FINISHED HERE
-        self.__next()  # send the next message (SUCCESS CASE) <<<===========TRANSMISSION OF THE NEXT MESSAGE STARTS HERE
-
-    def __ON_EOT(self, peer=None):
-        '''
-        Called when EOT is received from the peer.
-        :return: None
-        '''
-        if DEBUG:
-            peer = "from SELF" if peer else "from PEER"
-            logger.info("RX: EOT "+peer)
-
-        if self.__state != STATE_RX_FINISHED:
-            return
-
-        self.__timer_EOT_expires.stop()
-
-        self.__state = STATE_IDLE
-        self.__txData = ""
-        self.__wait_for = None
-
-    def __wait(self, re_pattern):
-        '''
-        Set the regex pattern to wait for in incoming data to appear.
-        :param re_pattern(str): regex pattern of awaited data
-        :return: None
-        '''
-        if DEBUG:
-            if len(re_pattern) == 1:
-                pattern = CODE_SYMBOL.get(ord(re_pattern))
-            else:
-                pattern = "MESSAGE"
-
-            logger.info("WAITING: %s" % pattern)
-
-        if not re_pattern:
-            raise ValueError("Wrong argument. Have no idea what to wait for.")
-
-        self.__wait_for = re.compile(re_pattern)
 
     def __read(self, data):
-        '''
-        Called every time new data is received from the peer.
-        :param data(str): new data received from the peer
-        :return: None
-        '''
-        # The data from the peer might be received in chunks of several bytes, but we want to process it on byte at a
-        # time.
         if len(data) > 1:
             for byte in data:
                 self.__read(byte)
             return
 
-        # If there's a match we do the appropriate processing.
-        if re.match(ENQ, data):
-            self.__ON_ENQ()
-            return
+        self.__dispatcher.broadcastData(data)
 
-        if re.match(ACK, data):
-            self.__ON_ACK()
-            return
+        if data == ENQ:
+            print "RX: ENQ"
+            self.writeACK()
 
-        if re.match(EOT, data):
-            self.__ON_EOT()
-            return
+        if data == EOT:
+            print "RX: EOT"
+            pass
+        # может можно самим передавать
+        #     pass
 
-        if re.match(NAK, data):
-            self.__ON_NAK()
-            return
+        if data == NAK:
+            print "RX: NAK"
+        # решаем NAK
+            pass
 
-        if self.__state == STATE_RX_STARTED:
-            self.__traffic += data
+    def __write(self, data):
+        Serial.write(self, data)
 
-            match = re.match(self.__wait_for, self.__traffic)
-            if match:
-                self.__timer_MESSAGE_expires.stop()
+    def onReadyRead(self, message):
+        self.state = STATE_RX_FINISHED
+        print("Rx: ", message)
 
-                message = match.group('message')
-                self.__onReadyRead(message)
-
-                checksum_remote = ord(match.group('checksum'))  # the sum in the message, the peer calculated it
-                checksum_local = 0  # the sum we calculate based upon data received from the peer
-                for char in message + ETX:
-                    checksum_local ^= ord(char)
-
-                checksum_ok = True if checksum_local == checksum_remote else False
-
-                if IGNORE_CHECKSUM_ERRORS:
-                    checksum_ok = True
-
-                if checksum_ok:
-                    self.__traffic = ""
-                    self.__state = STATE_RX_FINISHED
-                    self.__ACK()
-                    self.__timer_EOT_expires.start()
-                else:
-                    errorCode = 7
-                    errorDescription = "Checksum error in %s. Expected: %s, received: %s" % (message, checksum_local, checksum_remote)
-                    error = (errorCode, errorDescription)
-                    self.__onError(error)
-
-                    self.__traffic = ""
-                    self.__state = STATE_RX_FINISHED
-                    self.__NAK()
-
-    def __onReadyRead(self, message):
-        '''
-        The slot is called when new data(str) <message> has been received from the peer.
-        :param message(str): new data, a complete unit og meaning;
-        :return: None
-        '''
-
-        if DEBUG:
-            logger.info("RX: MESSAGE: %s" % message)
-
-        if self.__on_read:
-            self.__on_read(message)
-
-    def __onError(self, error):
-        '''
-        The slot is called when an error(tuple(int, str)) <error> occurs.
-        :param error tuple(errorCode(int), errorDescription(str)): the error occurred;
-        :return: None
-        '''
-        if DEBUG:
-            logger.error("ERROR: %s" % error[1])
-
-        if self.__on_error:
-            self.__on_error(error)
-
-    def __write(self, message):
-        '''
-        Write the data(str) <message> using the BSC protocol. The data is supposed to be a complete unit of meaning
-        (a command, message, etc...) sent to the peer as a whole.
-        :param message(str): data to write
-        :return: None
-        '''
+    def write(self, message):
         checksum = 0
         for char in message + ETX:
             checksum ^= ord(char)
+        message = STX + message + ETX + chr(checksum)
 
-        self.__txData = STX + message + ETX + chr(checksum)  # make a message
-        self.__ENQ()
-
-    def __next(self):
-        '''
-        Get the next message(str) to send and store it in self.__message for future use.
-        :return: None
-        '''
-        if self.__messages:
-            self.__message = self.__messages[0]
-            self.__messages = self.__messages[1:]
-            self.__write(self.__message)
-
-    def __errorString(self, errorCode):
-        description = CODE_DESCRIPTION.get(errorCode, None)
-        if None:
-            description = CODE_DESCRIPTION[-1]
-
-        return description
-
-    def write(self, message):
-        '''
-        Write data(either str or list of str)<message> using the BSC protocol. The data consists of either:
-        1. a single unit of meaning (e.g. "msg") of type str or;
-        2. a series of complete units of meaning separated by white space (e.g "msg1 msg2 msg3") of type str or;
-        3. a list of complete units of meaning (e.g. ["msg1", "msg2", "msg3"]) of type str.
-        :param message(either str or list of str): data to write
-        :return: None
-        '''
-        if isinstance(message, str):
-            messages = str(message).split()  # in case we're trying to send something like "msg1 msg2     msg3"
-            self.__messages += messages
-        elif isinstance(message, list):
-            for item in message:
-                self.__messages.append(item)
-        else:
-            raise TypeError("argument must be a string or a list of strings not {}".format(type(message).__name__))
-
-        if self.__state == STATE_IDLE:
-            self.__next()
+        self.messages.append(message)
+        self.writeENQ()
 
     @property
-    def onRead(self):
-        return self.__on_read
+    def state(self):
+        return self.__state
 
-    @onRead.setter
-    def onRead(self, callback):
-        self.__on_read = callback
+    @state.setter
+    def state(self, newSate):
+        print "FROM {} -> TO {}".format(self.verboseState(self.state), self.verboseState(newSate))
+        self.__state = newSate
 
-    @property
-    def onError(self):
-        return self.__on_error
-
-    @onError.setter
-    def onError(self, callback):
-        self.__on_error = callback
+    @staticmethod
+    def verboseState(state):
+        if state == STATE_IDLE:         return "IDLE"
+        if state == STATE_ABOUT_TO_TX:  return "ABOUT_TO_TX"
+        if state == STATE_TX_STARTED:   return "TX_STARTED"
+        if state == STATE_TX_FINISHED:  return "TX_FINISHED"
+        if state == STATE_RX_STARTED:   return "RX_STARTED"
+        if state == STATE_RX_FINISHED:  return "RX_FINISHED"
