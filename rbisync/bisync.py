@@ -24,12 +24,11 @@ sys.path.append(os.path.abspath("../../rserial/"))
 
 import re
 import logging
-from async import Dispatcher, AbstractHandle, singleton
+from async import Dispatcher, AbstractHandle, AbstractDeferredAction
 from rserial.serial import Serial
 
 
-DEBUG = True  # if set True, debug messages are sent to stdout
-STRICT = False  # if set True, the behaviour is close to BSC protocol spec
+DEBUG = False  # if set True, debug messages are sent to stdout
 IGNORE_CHECKSUM_ERRORS = True
 
 ENQ = chr(05)
@@ -49,25 +48,36 @@ STATE_RX_FINISHED = 5
 RETRY_TIMEOUT = {1: 1500, 2: 1500}  # key=retry number, value=delay(milliseconds)
 MAX_RETRY = len(RETRY_TIMEOUT)
 
-ACK_EXPIRATION = 1500  # (milliseconds), the period of time we wait the peer to send ACK
-MESSAGE_EXPIRATION = 3000  # (milliseconds), the period of time we wait the peer to send a message
-EOT_EXPIRATION = 1500  # (milliseconds), the period of time we wait the peer to send EOT
+TX_ENQ_WAIT_FOR_ACK = 250  # (мс) отправили ENQ, ждем ACK не дольше указанного интервала
+TX_MESSAGE_WAIT_FOR_ACK = 500  # (мс) отправили MESSAGE, ждем ACK не дольше указанного интервала
+TX_ACK_WAIT_FOR_MESSAGE = 100  # (мс) отправили ACK, ждем MESSAGE не дольше указанного интервала
+TX_ACK_WAIT_FOR_EOT = 125  # (мс) отправили ACK, ждем EOT не дольше указанного интервала
 
 # errors
 CODE_DESCRIPTION = {
    -1: "Unknown error",
-    1: "No ACK too long after several attempt(s) before sending message",
-    2: "Remote peer not responding.",
-    3: "No ACK too long AFTER sending message.",
-    4: "No message too long.",
-    5: "No EOT too long.",
-    6: "Remote peer not acknowledge transmission.",
-    7: "Checksum error"
+    1: "No ACK too long after several attempt(s) BEFORE sending message",
+    2: "Remote peer not responding",
+    3: "No ACK too long AFTER sending message",
+    4: "No message too long",
+    5: "No EOT too long",
+    6: "Remote peer not acknowledge transmission",
+    7: "Checksum error",
+    8: "Collision detected"
 }
 
 # for debug purposes
-CODE_SYMBOL = {ord(EOT): "EOT", ord(ENQ): "ENQ", ord(ACK): "ACK", ord(NAK): "NAK"}
-CODE_STATE = {STATE_IDLE: "IDLE", STATE_TX_STARTED: "TX_STARTED", STATE_TX_FINISHED: "TX_FINISHED", STATE_RX_STARTED: "RX_STARTED", STATE_RX_FINISHED: "RX_FINISHED"}
+CODE_SYMBOL = {ord(EOT): "EOT",
+               ord(ENQ): "ENQ",
+               ord(ACK): "ACK",
+               ord(NAK): "NAK"}
+
+CODE_STATE = {STATE_IDLE: "IDLE",
+              STATE_ABOUT_TO_TX: "ABOUT_TO_TX",
+              STATE_TX_STARTED: "TX_STARTED",
+              STATE_TX_FINISHED: "TX_FINISHED",
+              STATE_RX_STARTED: "RX_STARTED",
+              STATE_RX_FINISHED: "RX_FINISHED"}
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -90,41 +100,78 @@ class ENQ_For_ACK_Handle(AbstractHandle):
     def __init__(self, serial):
         AbstractHandle.__init__(self)
         self.serial = serial
-        self.timeout = 15000
+        self.retryCount = 0
+        self.timeout = TX_ENQ_WAIT_FOR_ACK
 
     def __del__(self):
         self.detach()
 
     def onNewData(self, data):
         if data == ACK:
-            print "RX ACK"
+            if DEBUG:
+                logger.info("RX ACK")
+
             self.detach()
             self.serial.state = STATE_TX_STARTED
             self.serial.writeMessage()
 
         if data == ENQ:
-            print "RX ENQ"
+            if DEBUG:
+                logger.info("RX ENQ")
+
             self.detach()
             self.serial.state = STATE_IDLE
-            print "ERROR: Collision detected"
+
+            # "Collision detected"
+            errorCode = 8
+            errorDescription = self.serial.errorString(errorCode)
+            error = (errorCode, errorDescription)
+            self.serial._Bisync__onError(error)
 
         if data == NAK:
-            print "RX NAK"
+            if DEBUG:
+                logger.info("RX NAK")
+
             self.detach()
             self.serial.state = STATE_IDLE
 
     def onTimeout(self):
+        self.retryCount += 1
         self.detach()
         self.serial.state = STATE_IDLE
-        print "ERROR: ACK timeout expired"
+
+        if self.retryCount <= MAX_RETRY:
+            self.timeout = RETRY_TIMEOUT[self.retryCount]
+
+            # "No ACK too long after several attempt(s) before sending message"
+            errorCode = 1
+            errorDescription = self.serial.errorString(errorCode)
+            error = (errorCode, errorDescription)
+            self.serial._Bisync__onError(error)
+
+            self.serial.writeENQ()
+
+        else:
+            self.retryCount = 0
+            self.timeout = TX_ENQ_WAIT_FOR_ACK
+
+            # "Remote peer not responding"
+            errorCode = 2
+            errorDescription = self.serial.errorString(errorCode)
+            error = (errorCode, errorDescription)
+            self.serial._Bisync__onError(error)
+
+            self.serial.messages = self.serial.messages[1:]
+            if self.serial.messages:
+                self.serial.writeENQ()
 
 
 class MESSAGE_For_ACK_Handle(AbstractHandle):
     def __init__(self, serial):
         AbstractHandle.__init__(self)
         self.serial = serial
-        self.attemptCount = 0
-        self.timeout = 15000
+        self.retryCount = 0
+        self.timeout = TX_MESSAGE_WAIT_FOR_ACK
 
     def __del__(self):
         self.detach()
@@ -135,13 +182,15 @@ class MESSAGE_For_ACK_Handle(AbstractHandle):
         return self
 
     def onNewData(self, data):
-        print "Got: ", data
         if data == ACK:
-            print "RX ACK"
             self.detach()
             self.serial.state = STATE_TX_FINISHED
-            self.serial.writeEOT()
+
+            if DEBUG:
+                logger.info("RX ACK")
+
             self.serial.state = STATE_IDLE
+            self.serial.writeEOT()
 
             if self.serial.messages:
                 self.serial.writeENQ()
@@ -149,20 +198,31 @@ class MESSAGE_For_ACK_Handle(AbstractHandle):
         if data == NAK:
             self.detach()
             self.serial.state = STATE_IDLE
-            print "RX NAK"
+
+            if DEBUG:
+                logger.info("RX NAK")
 
     def onTimeout(self):
         self.detach()
         self.serial.state = STATE_IDLE
-        #смотрим число повторов и вычисляем таймаут для следующей передачи
-        print "ACK Timeout expired"
+
+        # "No ACK too long AFTER sending message"
+        errorCode = 3
+        errorDescription = self.serial.errorString(errorCode)
+        error = (errorCode, errorDescription)
+        self.serial._Bisync__onError(error)
+
+        # если есть сообщения в очереди, пробеум отправить следующее сообщение
+        self.serial.messages = self.serial.messages[1:]
+        if self.serial.messages:
+            self.serial.writeENQ()
 
 
 class ACK_For_MESSAGE_Handle(AbstractHandle):
     def __init__(self, serial):
         AbstractHandle.__init__(self)
         self.serial = serial
-        self.timeout = 15000
+        self.timeout = TX_ACK_WAIT_FOR_MESSAGE
         self.__rxData = ""
 
         messagePattern = r"%s(?P<message>.+)%s(?P<checksum>.{1})" % (STX, ETX)  # allow any character
@@ -188,33 +248,49 @@ class ACK_For_MESSAGE_Handle(AbstractHandle):
 
             checksum_ok = True if checksum_local == checksum_remote else False
 
+            if DEBUG:
+                logger.info("RX {} CHECKSUM={}({})".format(message, checksum_local, "ok" if checksum_ok else "not ok"))
+
+            if IGNORE_CHECKSUM_ERRORS:
+                checksum_ok = True
+
             if checksum_ok:
-                self.serial.onReadyRead(message)
+                self.serial._Bisync__onReadyRead(message)
                 self.serial.state = STATE_RX_FINISHED
                 self.serial.writeACK()
             else:
-                # errorCode = 7
-                # errorDescription = "Checksum error in %s. Expected: %s, received: %s" % (message, checksum_local, checksum_remote)
-                # error = (errorCode, errorDescription)
-                # self.__onError(error)
-                self.onReadyRead(message)
-                print "CHECKSUM ERROR"
+                errorCode = 7
+                errorDescription = "Checksum error in %s. Expected: %s, received: %s" % (message, checksum_local, checksum_remote)
+                error = (errorCode, errorDescription)
+                self.serial._Bisync__onError(error)
+
+                self.serial.state = STATE_RX_FINISHED
+                self.serial.state = STATE_IDLE
                 self.serial.writeNAK()
 
     def onTimeout(self):
         self.detach()
+        self.serial.state = STATE_IDLE
         self.__rxData = ""
-        # изменяем состояние
-        # сообщаем об ошибка, переходим в IDLE
+
+        # "No message too long"
+        errorCode = 4
+        errorDescription = self.serial.errorString(errorCode)
+        error = (errorCode, errorDescription)
+        self.serial._Bisync__onError(error)
+
+        if self.serial.messages:
+            self.serial.writeENQ()
 
     def onError(self, error):
         self.detach()
+
 
 class ACK_For_EOT_Handle(AbstractHandle):
     def __init__(self, serial):
         AbstractHandle.__init__(self)
         self.serial = serial
-        self.timeout = 15000
+        self.timeout = TX_ACK_WAIT_FOR_EOT
 
     def __del__(self):
         self.detach()
@@ -222,13 +298,23 @@ class ACK_For_EOT_Handle(AbstractHandle):
     def onNewData(self, data):
         if data == EOT:
             self.detach()
-            # изменяем состояние
-            print "RX EOT"
+            self.serial.state = STATE_IDLE
+
+            if DEBUG:
+                logger.info("RX EOT")
 
     def onTimeout(self):
         self.detach()
-        # изменяем состояние
-        print "EOT Timeout expired"
+        self.serial.state = STATE_IDLE
+
+        # "No EOT too long"
+        errorCode = 5
+        errorDescription = self.serial.errorString(errorCode)
+        error = (errorCode, errorDescription)
+        self.serial._Bisync__onError(error)
+
+        if self.serial.messages:
+            self.serial.writeENQ()
 
 
 class Bisync(Serial):
@@ -246,6 +332,8 @@ class Bisync(Serial):
 
         self._Serial__on_read = self.__read  # watch out! self.__read set as the parent's callback
         self.__state = STATE_IDLE
+        self.__on_read = None
+        self.__on_error = None
         self.messages = []
 
         self.ENQ_For_ACK_Handle = ENQ_For_ACK_Handle(self)
@@ -261,31 +349,48 @@ class Bisync(Serial):
 
     def writeENQ(self):
         self.state = STATE_ABOUT_TO_TX
+        if DEBUG:
+                logger.info("ТX ENQ")
+
         self.setHandlerForMessageResponse(ENQ, self.ENQ_For_ACK_Handle)
 
     def writeMessage(self):
         if self.messages:
-
             message = self.messages[0]
             self.messages = self.messages[1:]
-            print "TX Message: ", message
+            if DEBUG:
+                logger.info("ТX {} CHECKSUM={}".format(message[1:-2], ord(message[-1])))
+
             self.setHandlerForMessageResponse(message, self.MESSAGE_For_ACK_Handle(message))
 
-    def writeEOT(self):
-        print "TX: EOT"
-        Serial.write(self, EOT)
-
     def writeACK(self):
-        print "TX: ACK"
         if self.state == STATE_IDLE:
             self.state = STATE_RX_STARTED
+            if DEBUG:
+                logger.info("ТX ACK")
+
             self.setHandlerForMessageResponse(ACK, self.ACK_For_MESSAGE_Handle)
             return
 
         if self.state == STATE_RX_FINISHED:
             self.state = STATE_IDLE
+            if DEBUG:
+                logger.info("ТX ACK")
+
             self.setHandlerForMessageResponse(ACK, self.ACK_For_EOT_Handle)
             return
+
+    def writeEOT(self):
+        if DEBUG:
+                logger.info("ТX EOT")
+
+        self.__write(EOT)
+
+    def writeNAK(self):
+        if DEBUG:
+                logger.info("ТX NAK")
+
+        self.__write(NAK)
 
     def __read(self, data):
         if len(data) > 1:
@@ -296,35 +401,78 @@ class Bisync(Serial):
         self.__dispatcher.broadcastData(data)
 
         if data == ENQ:
-            print "RX: ENQ"
-            self.writeACK()
+            if DEBUG:
+                logger.info("RX ENQ")
 
-        if data == EOT:
-            print "RX: EOT"
-            pass
-        # может можно самим передавать
-        #     pass
+            if self.state == STATE_IDLE:
+                self.writeACK()
+                return
 
         if data == NAK:
-            print "RX: NAK"
-        # решаем NAK
-            pass
+            # решаем NAK
+            if DEBUG:
+                logger.info("RX NAK")
 
-    def __write(self, data):
-        Serial.write(self, data)
+            return
 
-    def onReadyRead(self, message):
-        self.state = STATE_RX_FINISHED
-        print("Rx: ", message)
+    def __write(self, message):
+        Serial.write(self, message)
+
+    def __onReadyRead(self, message):
+        if self.__on_read:
+            self.__on_read(message)
+
+    def __onError(self, error):
+        if self.__on_error:
+            self.__on_error(error)
+
+    def errorString(self, errorCode):
+        description = CODE_DESCRIPTION.get(errorCode, None)
+        if None:
+            description = CODE_DESCRIPTION[-1]
+
+        return description
 
     def write(self, message):
-        checksum = 0
-        for char in message + ETX:
-            checksum ^= ord(char)
-        message = STX + message + ETX + chr(checksum)
+        messages = []
+        if isinstance(message, str):
+            messages = str(message).split()  # in case we're trying to send something like "msg1 msg2     msg3"
 
-        self.messages.append(message)
-        self.writeENQ()
+        elif isinstance(message, list):
+            for item in message:
+                messages.append(item)
+        else:
+            raise TypeError("argument must be a string or a list of strings not {}".format(type(message).__name__))
+
+        if not messages:
+            return
+
+        for message in messages:
+            checksum = 0
+            for char in message + ETX:
+                checksum ^= ord(char)
+            message = STX + message + ETX + chr(checksum)
+
+            self.messages.append(message)
+
+        if self.state == STATE_IDLE:
+            self.writeENQ()
+
+    @property
+    def onRead(self):
+        return self.__on_read
+
+    @onRead.setter
+    def onRead(self, callback):
+        self.__on_read = callback
+
+    @property
+    def onError(self):
+        return self.__on_error
+
+    @onError.setter
+    def onError(self, callback):
+        self.__on_error = callback
 
     @property
     def state(self):
@@ -332,14 +480,16 @@ class Bisync(Serial):
 
     @state.setter
     def state(self, newSate):
-        print "FROM {} -> TO {}".format(self.verboseState(self.state), self.verboseState(newSate))
+        if DEBUG:
+                logger.info("FROM {} -> TO {}".format(Bisync.verboseState(self.state), Bisync.verboseState(newSate)))
+
         self.__state = newSate
 
     @staticmethod
     def verboseState(state):
-        if state == STATE_IDLE:         return "IDLE"
-        if state == STATE_ABOUT_TO_TX:  return "ABOUT_TO_TX"
-        if state == STATE_TX_STARTED:   return "TX_STARTED"
-        if state == STATE_TX_FINISHED:  return "TX_FINISHED"
-        if state == STATE_RX_STARTED:   return "RX_STARTED"
-        if state == STATE_RX_FINISHED:  return "RX_FINISHED"
+        if state == STATE_IDLE:        return "IDLE"
+        if state == STATE_ABOUT_TO_TX: return "ABOUT_TO_TX"
+        if state == STATE_TX_STARTED:  return "TX_STARTED"
+        if state == STATE_TX_FINISHED: return "TX_FINISHED"
+        if state == STATE_RX_STARTED:  return "RX_STARTED"
+        if state == STATE_RX_FINISHED: return "RX_FINISHED"

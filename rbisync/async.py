@@ -25,6 +25,10 @@ class Dispatcher:
         if handle in self.__handles:
             self.__handles.remove(handle)
 
+    def detachAll(self):
+        for handle in self.handles():
+            handle.detach()
+
     def handles(self):
         return self.__items
 
@@ -50,7 +54,7 @@ class AbstractHandle(QObject):
             self.__timer.start()
 
     def detach(self):
-        self.__timeout = None
+        # self.__timeout = None
         self.__timer.stop()
         Dispatcher().detachHandle(self)
 
@@ -80,9 +84,23 @@ class AbstractHandle(QObject):
         self.__timeout = timeout
 
 
-def exchange(request, handle):
-    print "TX            : %s " % request
-    print "ATTACH handle : %s" % id(handle)
-    handle.attach()
+class AbstractDeferredAction(QObject):
+    def __init__(self, parent):
+        QObject.__init__(self)
+        self.__parent = parent
+        self.__timer = QTimer(self)
+        self.__timer.setSingleShot(True)
 
+    def defer(self, timeout):
+        print "Defer started"
+        if self.__timer.isActive():
+            self.__timer.stop()
 
+        self.__timer.start(timeout)
+
+    def cancel(self):
+        self.__timer.stop()
+
+    @abstractmethod
+    def onTimeout(self):
+        pass
